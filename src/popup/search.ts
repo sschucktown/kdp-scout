@@ -1,3 +1,7 @@
+type RelevanceClassification = 'Direct' | 'Adjacent' | 'Irrelevant';
+
+const RELEVANCE_CLASSES: RelevanceClassification[] = ['Direct', 'Adjacent', 'Irrelevant'];
+
 interface SearchResultDraft {
   position: number;
   sponsored: boolean;
@@ -6,6 +10,7 @@ interface SearchResultDraft {
   url: string;
   displayPrice?: string;
   ratingCount?: number;
+  relevance?: RelevanceClassification;
 }
 
 interface SearchDraft {
@@ -17,6 +22,13 @@ interface SearchDraft {
 interface SearchCapture extends SearchDraft {
   id: string;
   capturedAt: string;
+}
+
+interface ClassificationCounts {
+  direct: number;
+  adjacent: number;
+  irrelevant: number;
+  unclassified: number;
 }
 
 const SEARCH_STORAGE_KEY = 'searchCaptures';
@@ -31,6 +43,10 @@ const saveSearchButton = document.querySelector<HTMLButtonElement>('#save-search
 const refreshButton = document.querySelector<HTMLButtonElement>('#refresh');
 const bookCard = document.querySelector<HTMLElement>('#book-card');
 const diagnosticsPanel = document.querySelector<HTMLElement>('#diagnostics-panel');
+const directCount = document.querySelector<HTMLElement>('#direct-count');
+const adjacentCount = document.querySelector<HTMLElement>('#adjacent-count');
+const irrelevantCount = document.querySelector<HTMLElement>('#irrelevant-count');
+const unclassifiedCount = document.querySelector<HTMLElement>('#unclassified-count');
 
 let currentSearch: SearchDraft | null = null;
 
@@ -135,6 +151,47 @@ function extractAmazonSearch(): SearchDraft {
   };
 }
 
+function getClassificationCounts(search: SearchDraft): ClassificationCounts {
+  const counts: ClassificationCounts = {
+    direct: 0,
+    adjacent: 0,
+    irrelevant: 0,
+    unclassified: 0,
+  };
+
+  for (const result of search.results) {
+    if (result.relevance === 'Direct') counts.direct += 1;
+    else if (result.relevance === 'Adjacent') counts.adjacent += 1;
+    else if (result.relevance === 'Irrelevant') counts.irrelevant += 1;
+    else counts.unclassified += 1;
+  }
+
+  return counts;
+}
+
+function updateClassificationState(search: SearchDraft): ClassificationCounts {
+  const counts = getClassificationCounts(search);
+  if (directCount) directCount.textContent = counts.direct.toLocaleString();
+  if (adjacentCount) adjacentCount.textContent = counts.adjacent.toLocaleString();
+  if (irrelevantCount) irrelevantCount.textContent = counts.irrelevant.toLocaleString();
+  if (unclassifiedCount) unclassifiedCount.textContent = counts.unclassified.toLocaleString();
+
+  if (saveSearchButton) {
+    saveSearchButton.disabled = search.results.length === 0 || !search.query || counts.unclassified > 0;
+  }
+
+  return counts;
+}
+
+function setActiveClassification(controls: HTMLElement, classification: RelevanceClassification): void {
+  const buttons = controls.querySelectorAll<HTMLButtonElement>('.relevance-button');
+  for (const button of buttons) {
+    const active = button.dataset.relevance === classification;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+}
+
 function renderSearch(search: SearchDraft): void {
   if (searchQuery) searchQuery.textContent = search.query || '—';
   if (searchResultCount) searchResultCount.textContent = search.results.length.toLocaleString();
@@ -171,13 +228,43 @@ function renderSearch(search: SearchDraft): void {
         content.append(badge);
       }
 
-      content.append(title, meta);
+      const controls = document.createElement('div');
+      controls.className = 'relevance-controls';
+      controls.setAttribute('aria-label', `Classify ${result.title}`);
+
+      for (const classification of RELEVANCE_CLASSES) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'relevance-button';
+        button.dataset.relevance = classification;
+        button.textContent = classification;
+        button.setAttribute('aria-pressed', String(result.relevance === classification));
+        button.classList.toggle('active', result.relevance === classification);
+
+        button.addEventListener('click', () => {
+          result.relevance = classification;
+          setActiveClassification(controls, classification);
+          const counts = updateClassificationState(search);
+
+          if (counts.unclassified === 0) {
+            setSearchStatus('All results classified. Ready to save.', 'success');
+          } else {
+            setSearchStatus(
+              `${counts.unclassified.toLocaleString()} result${counts.unclassified === 1 ? '' : 's'} left to classify.`,
+            );
+          }
+        });
+
+        controls.append(button);
+      }
+
+      content.append(title, meta, controls);
       article.append(position, content);
       searchResultsList.append(article);
     }
   }
 
-  if (saveSearchButton) saveSearchButton.disabled = search.results.length === 0 || !search.query;
+  updateClassificationState(search);
 }
 
 function localDateKey(date: Date): string {
@@ -200,12 +287,20 @@ function sameSearch(left: SearchCapture, right: SearchDraft): boolean {
       && result.title === other.title
       && result.url === other.url
       && result.displayPrice === other.displayPrice
-      && result.ratingCount === other.ratingCount;
+      && result.ratingCount === other.ratingCount
+      && result.relevance === other.relevance;
   });
 }
 
 async function saveSearch(): Promise<void> {
   if (!currentSearch?.query || currentSearch.results.length === 0) return;
+
+  const counts = getClassificationCounts(currentSearch);
+  if (counts.unclassified > 0) {
+    setSearchStatus('Classify every result as Direct, Adjacent, or Irrelevant before saving.', 'error');
+    return;
+  }
+
   if (saveSearchButton) saveSearchButton.disabled = true;
 
   const stored = await chrome.storage.local.get(SEARCH_STORAGE_KEY);
@@ -220,7 +315,7 @@ async function saveSearch(): Promise<void> {
   );
 
   if (duplicate) {
-    setSearchStatus('This exact search result set was already saved today. Duplicate skipped.', 'success');
+    setSearchStatus('This exact classified search was already saved today. Duplicate skipped.', 'success');
     if (saveSearchButton) saveSearchButton.disabled = false;
     return;
   }
@@ -233,7 +328,7 @@ async function saveSearch(): Promise<void> {
 
   await chrome.storage.local.set({ [SEARCH_STORAGE_KEY]: captures });
   setSearchStatus(
-    `Saved ${currentSearch.results.length.toLocaleString()} results locally for “${currentSearch.query}”.`,
+    `Saved ${currentSearch.results.length.toLocaleString()} classified results: ${counts.direct} Direct, ${counts.adjacent} Adjacent, ${counts.irrelevant} Irrelevant.`,
     'success',
   );
   if (saveSearchButton) saveSearchButton.disabled = false;
@@ -269,7 +364,9 @@ async function refreshSearchCapture(): Promise<void> {
 
     currentSearch = search;
     renderSearch(search);
-    setSearchStatus(`Captured ${search.results.length.toLocaleString()} visible results. Review before saving.`);
+    setSearchStatus(
+      `Captured ${search.results.length.toLocaleString()} visible results. Classify each result before saving.`,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to capture this Amazon search page.';
     setSearchStatus(message, 'error');
