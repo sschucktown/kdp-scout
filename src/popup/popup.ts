@@ -59,6 +59,17 @@ function extractAmazonBook(): BookDraft {
     return undefined;
   };
 
+  const firstMatchingText = (selectors: string[], pattern: RegExp): string | undefined => {
+    for (const selector of selectors) {
+      const elements = Array.from(document.querySelectorAll(selector));
+      for (const element of elements) {
+        const value = normalize(element.textContent);
+        if (value && pattern.test(value)) return value;
+      }
+    }
+    return undefined;
+  };
+
   const url = new URL(window.location.href);
   const urlAsin = url.pathname.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})(?:[/?]|$)/i)?.[1];
   const inputAsin = document.querySelector<HTMLInputElement>('#ASIN')?.value;
@@ -85,7 +96,8 @@ function extractAmazonBook(): BookDraft {
     return undefined;
   };
 
-  const pageText = detailLines.join('\n') || normalize(document.body?.innerText);
+  const bodyText = normalize(document.body?.innerText);
+  const pageText = detailLines.join('\n') || bodyText;
   const rankSection = pageText.match(/Best Sellers Rank[\s\S]{0,700}/i)?.[0] ?? pageText;
   const booksBsrMatch = rankSection.match(/#([\d,]+)\s+in\s+Books\b/i);
   const booksBsr = booksBsrMatch?.[1]
@@ -95,8 +107,19 @@ function extractAmazonBook(): BookDraft {
   const ratingCandidates = [
     firstText('#acrCustomerReviewText'),
     firstText('#acrCustomerReviewLink'),
-    firstText('[data-hook="total-review-count"]'),
+    firstText('#averageCustomerReviews'),
     firstText('#averageCustomerReviews_feature_div'),
+    firstText('[data-hook="total-review-count"]'),
+    firstMatchingText(
+      [
+        'a[href*="#customerReviews"]',
+        'a[href*="customerReviews"]',
+        'a[href*="product-reviews"]',
+        '[aria-label*="rating" i]',
+        '[aria-label*="review" i]',
+      ],
+      /(?:\([\d,]+\)|[\d,]+\s+(?:ratings?|reviews?))/i,
+    ),
   ].filter((value): value is string => Boolean(value));
 
   let ratingCount: number | undefined;
@@ -114,19 +137,55 @@ function extractAmazonBook(): BookDraft {
     }
   }
 
-  const priceCandidate = firstText(
-    '#tmmSwatches .selected .slot-price',
-    '#tmmSwatches .selected .a-color-price',
-    '#tmmSwatches .selected .a-price .a-offscreen',
-    '#mediaNoAccordion .a-price .a-offscreen',
-    '#corePrice_feature_div .a-offscreen',
-    '.priceToPay .a-offscreen',
-    '#buybox .a-price .a-offscreen',
-    '#newBuyBoxPrice',
-    '#price',
-  );
-  const priceMatch = priceCandidate?.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
-  const displayPrice = priceMatch ? `$${priceMatch[1]}` : priceCandidate;
+  if (ratingCount === undefined) {
+    const titleRegion = normalize(
+      document.querySelector('#centerCol')?.textContent ??
+      document.querySelector('#title_feature_div')?.parentElement?.textContent,
+    );
+    const fallbackRating = titleRegion.match(/\b\d(?:\.\d)?\s*[^\d]{0,20}\(([\d,]+)\)/)?.[1];
+    if (fallbackRating) ratingCount = Number.parseInt(fallbackRating.replace(/,/g, ''), 10);
+  }
+
+  const pricePattern = /\$\s*([\d,]+(?:\.\d{2})?)/;
+  const priceCandidate =
+    firstText(
+      '#tmmSwatches .swatchElement.selected .slot-price',
+      '#tmmSwatches .swatchElement.selected .a-color-price',
+      '#tmmSwatches .swatchElement.selected .a-price .a-offscreen',
+      '#tmmSwatches .swatchElement.selected',
+      '#tmmSwatches .a-button-selected',
+      '#formats .a-button-selected',
+      '#mediaTab_content_landing',
+      '#mediaNoAccordion .a-price .a-offscreen',
+      '#corePrice_feature_div .a-offscreen',
+      '.priceToPay .a-offscreen',
+      '#buybox .a-price .a-offscreen',
+      '#buybox',
+      '#desktop_unifiedPrice',
+      '#newBuyBoxPrice',
+      '#price',
+    ) ??
+    firstMatchingText(
+      [
+        '#tmmSwatches *',
+        '#formats *',
+        '#buybox *',
+        '[id*="mediaTab"] *',
+      ],
+      pricePattern,
+    );
+
+  let displayPrice: string | undefined;
+  const priceMatch = priceCandidate?.match(pricePattern);
+  if (priceMatch?.[1]) {
+    displayPrice = `$${priceMatch[1]}`;
+  } else {
+    const format = firstText('#productSubtitle') || firstText('#mediaTabs .a-active') || 'Paperback';
+    const escapedFormat = format.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const formatPrice = bodyText.match(new RegExp(`${escapedFormat}[\\s\\S]{0,80}?\\$\\s*([\\d,]+(?:\\.\\d{2})?)`, 'i'))?.[1]
+      ?? bodyText.match(/Paperback[\s\S]{0,80}?\$\s*([\d,]+(?:\.\d{2})?)/i)?.[1];
+    if (formatPrice) displayPrice = `$${formatPrice}`;
+  }
 
   const publisher = detailValue('Publisher');
   const publicationDate = detailValue('Publication date', 'Publication Date');
