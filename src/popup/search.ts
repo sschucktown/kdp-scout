@@ -191,8 +191,9 @@ function sameSearch(left: SearchCapture, right: SearchDraft): boolean {
 
   return left.results.every((result, index) => {
     const other = right.results[index];
-    return Boolean(other)
-      && result.position === other.position
+    if (!other) return false;
+
+    return result.position === other.position
       && result.sponsored === other.sponsored
       && result.asin === other.asin
       && result.title === other.title
