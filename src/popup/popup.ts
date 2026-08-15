@@ -51,6 +51,14 @@ function extractAmazonBook(): BookDraft {
   const text = (selector: string): string =>
     normalize(document.querySelector(selector)?.textContent);
 
+  const firstText = (...selectors: string[]): string | undefined => {
+    for (const selector of selectors) {
+      const value = text(selector);
+      if (value) return value;
+    }
+    return undefined;
+  };
+
   const url = new URL(window.location.href);
   const urlAsin = url.pathname.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})(?:[/?]|$)/i)?.[1];
   const inputAsin = document.querySelector<HTMLInputElement>('#ASIN')?.value;
@@ -84,21 +92,41 @@ function extractAmazonBook(): BookDraft {
     ? Number.parseInt(booksBsrMatch[1].replace(/,/g, ''), 10)
     : undefined;
 
-  const ratingText =
-    text('#acrCustomerReviewText') ||
-    text('[data-hook="total-review-count"]') ||
-    text('#averageCustomerReviews_feature_div');
-  const ratingMatch = ratingText.match(/([\d,]+)\s+(?:ratings?|reviews?)/i);
-  const ratingCount = ratingMatch?.[1]
-    ? Number.parseInt(ratingMatch[1].replace(/,/g, ''), 10)
-    : undefined;
+  const ratingCandidates = [
+    firstText('#acrCustomerReviewText'),
+    firstText('#acrCustomerReviewLink'),
+    firstText('[data-hook="total-review-count"]'),
+    firstText('#averageCustomerReviews_feature_div'),
+  ].filter((value): value is string => Boolean(value));
 
-  const displayPrice =
-    text('#corePrice_feature_div .a-offscreen') ||
-    text('.priceToPay .a-offscreen') ||
-    text('#newBuyBoxPrice') ||
-    text('#price') ||
-    undefined;
+  let ratingCount: number | undefined;
+  for (const candidate of ratingCandidates) {
+    const labeledMatch = candidate.match(/([\d,]+)\s+(?:ratings?|reviews?)/i);
+    const parentheticalMatch = candidate.match(/\(([\d,]+)\)/);
+    const bareMatch = candidate.match(/^\s*([\d,]+)\s*$/);
+    const raw = labeledMatch?.[1] ?? parentheticalMatch?.[1] ?? bareMatch?.[1];
+    if (!raw) continue;
+
+    const parsed = Number.parseInt(raw.replace(/,/g, ''), 10);
+    if (Number.isFinite(parsed)) {
+      ratingCount = parsed;
+      break;
+    }
+  }
+
+  const priceCandidate = firstText(
+    '#tmmSwatches .selected .slot-price',
+    '#tmmSwatches .selected .a-color-price',
+    '#tmmSwatches .selected .a-price .a-offscreen',
+    '#mediaNoAccordion .a-price .a-offscreen',
+    '#corePrice_feature_div .a-offscreen',
+    '.priceToPay .a-offscreen',
+    '#buybox .a-price .a-offscreen',
+    '#newBuyBoxPrice',
+    '#price',
+  );
+  const priceMatch = priceCandidate?.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
+  const displayPrice = priceMatch ? `$${priceMatch[1]}` : priceCandidate;
 
   const publisher = detailValue('Publisher');
   const publicationDate = detailValue('Publication date', 'Publication Date');
