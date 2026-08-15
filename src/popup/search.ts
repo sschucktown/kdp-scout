@@ -66,7 +66,8 @@ function extractAmazonSearch(): SearchDraft {
 
   const url = new URL(window.location.href);
   const searchBox = document.querySelector<HTMLInputElement>('#twotabsearchtextbox');
-  const query = normalize(searchBox?.value || url.searchParams.get('k') || url.searchParams.get('field-keywords'));
+  const rawQuery = searchBox?.value || url.searchParams.get('k') || url.searchParams.get('field-keywords');
+  const query = normalize(rawQuery?.replace(/\+/g, ' '));
 
   const nodes = Array.from(
     document.querySelectorAll<HTMLElement>('[data-component-type="s-search-result"]'),
@@ -191,8 +192,9 @@ function sameSearch(left: SearchCapture, right: SearchDraft): boolean {
 
   return left.results.every((result, index) => {
     const other = right.results[index];
-    return Boolean(other)
-      && result.position === other.position
+    if (!other) return false;
+
+    return result.position === other.position
       && result.sponsored === other.sponsored
       && result.asin === other.asin
       && result.title === other.title
