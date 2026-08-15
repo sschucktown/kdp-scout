@@ -209,7 +209,7 @@ function calculateGateEvidence(
       recentWinnerProxy,
       kind: 'caution',
       label: 'Recent-entrant evidence weak',
-      summary: `Demand clears the three-winner threshold, but only ${recentWinnerProxy.toLocaleString()} recent winner proxy${recentWinnerProxy === 1 ? '' : 'ies'} currently meet both publication ≤18 months and BSR ≤35,000.`,
+      summary: `Demand clears the three-winner threshold, but only ${recentWinnerProxy.toLocaleString()} ${recentWinnerProxy === 1 ? 'recent winner proxy' : 'recent winner proxies'} currently meet both publication ≤18 months and BSR ≤35,000.`,
       nextAction: 'Manually assess recent entrant credibility before calling the initial gate passed, then verify 90-day BSR stability.',
     };
   }
@@ -296,7 +296,7 @@ function renderPanel(article: HTMLElement, evidence: GateEvidence): void {
   const grid = document.createElement('div');
   grid.className = 'readiness-evidence-grid';
   grid.append(
-    evidenceItem('Organic Direct', evidence.gateDirect.toLocaleString(), 'Target: generally 8–10+'),
+    evidenceItem('Organic Direct', evidence.gateDirect.toLocaleString(), 'Sponsored-only excluded · target generally 8–10+'),
     evidenceItem('BSR complete', `${evidence.bsrComplete}/${evidence.gateDirect}`),
     evidenceItem('BSR ≤35k', evidence.winners35k.toLocaleString(), 'Target: at least 3'),
     evidenceItem('Winning <300 reviews', `${evidence.winnersUnder300}/${evidence.winners35k || 0}`, 'Preferred, not a hard rule'),
