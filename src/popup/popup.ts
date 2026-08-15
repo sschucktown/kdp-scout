@@ -1,0 +1,183 @@
+import type { BookDraft, BookObservation } from '../models/book.js';
+
+const STORAGE_KEY = 'bookObservations';
+
+const statusEl = document.querySelector<HTMLParagraphElement>('#status');
+const cardEl = document.querySelector<HTMLElement>('#book-card');
+const saveButton = document.querySelector<HTMLButtonElement>('#save');
+const refreshButton = document.querySelector<HTMLButtonElement>('#refresh');
+
+let currentBook: BookDraft | null = null;
+
+function setText(selector: string, value: string | number | undefined): void {
+  const element = document.querySelector<HTMLElement>(selector);
+  if (element) element.textContent = value === undefined || value === '' ? '—' : String(value);
+}
+
+function setStatus(message: string, kind: 'normal' | 'error' | 'success' = 'normal'): void {
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  statusEl.classList.toggle('error', kind === 'error');
+  statusEl.classList.toggle('success', kind === 'success');
+}
+
+function renderBook(book: BookDraft): void {
+  setText('#title', book.title);
+  setText('#asin', book.asin);
+  setText('#price', book.displayPrice);
+  setText('#ratings', book.ratingCount?.toLocaleString());
+  setText('#bsr', book.booksBsr ? `#${book.booksBsr.toLocaleString()}` : undefined);
+  setText('#publisher', book.publisher);
+  setText('#publication-date', book.publicationDate);
+  setText('#pages', book.pageCount?.toLocaleString());
+
+  if (cardEl) cardEl.hidden = false;
+  if (saveButton) saveButton.disabled = !book.asin || !book.title;
+}
+
+async function getActiveTab(): Promise<chrome.tabs.Tab> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) throw new Error('No active tab found.');
+  return tab;
+}
+
+function extractAmazonBook(): BookDraft {
+  const normalize = (value: string | null | undefined): string =>
+    (value ?? '')
+      .replace(/[\u200e\u200f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const text = (selector: string): string =>
+    normalize(document.querySelector(selector)?.textContent);
+
+  const url = new URL(window.location.href);
+  const urlAsin = url.pathname.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})(?:[/?]|$)/i)?.[1];
+  const inputAsin = document.querySelector<HTMLInputElement>('#ASIN')?.value;
+  const asin = normalize(urlAsin ?? inputAsin).toUpperCase() || undefined;
+
+  const detailElements = Array.from(
+    document.querySelectorAll(
+      '#detailBullets_feature_div li, #productDetails_detailBullets_sections1 tr, #productDetails_techSpec_section_1 tr, #bookDetails_feature_div li',
+    ),
+  );
+  const detailLines = detailElements
+    .map((element) => normalize(element.textContent))
+    .filter(Boolean);
+
+  const detailValue = (...labels: string[]): string | undefined => {
+    for (const label of labels) {
+      const lowerLabel = label.toLowerCase();
+      const line = detailLines.find((candidate) => candidate.toLowerCase().startsWith(lowerLabel));
+      if (!line) continue;
+
+      const remainder = line.slice(label.length).replace(/^\s*[:：]\s*/, '').trim();
+      if (remainder) return remainder;
+    }
+    return undefined;
+  };
+
+  const pageText = detailLines.join('\n') || normalize(document.body?.innerText);
+  const rankSection = pageText.match(/Best Sellers Rank[\s\S]{0,700}/i)?.[0] ?? pageText;
+  const booksBsrMatch = rankSection.match(/#([\d,]+)\s+in\s+Books\b/i);
+  const booksBsr = booksBsrMatch?.[1]
+    ? Number.parseInt(booksBsrMatch[1].replace(/,/g, ''), 10)
+    : undefined;
+
+  const ratingText =
+    text('#acrCustomerReviewText') ||
+    text('[data-hook="total-review-count"]') ||
+    text('#averageCustomerReviews_feature_div');
+  const ratingMatch = ratingText.match(/([\d,]+)\s+(?:ratings?|reviews?)/i);
+  const ratingCount = ratingMatch?.[1]
+    ? Number.parseInt(ratingMatch[1].replace(/,/g, ''), 10)
+    : undefined;
+
+  const displayPrice =
+    text('#corePrice_feature_div .a-offscreen') ||
+    text('.priceToPay .a-offscreen') ||
+    text('#newBuyBoxPrice') ||
+    text('#price') ||
+    undefined;
+
+  const publisher = detailValue('Publisher');
+  const publicationDate = detailValue('Publication date', 'Publication Date');
+  const pageValue = detailValue('Print length', 'Paperback', 'Hardcover');
+  const pageCountMatch = pageValue?.match(/([\d,]+)\s+pages?/i);
+  const pageCount = pageCountMatch?.[1]
+    ? Number.parseInt(pageCountMatch[1].replace(/,/g, ''), 10)
+    : undefined;
+
+  return {
+    asin,
+    title: text('#productTitle') || undefined,
+    url: asin ? `https://www.amazon.com/dp/${asin}` : window.location.href,
+    displayPrice,
+    ratingCount,
+    booksBsr,
+    publisher,
+    publicationDate,
+    pageCount,
+  };
+}
+
+async function capturePage(): Promise<void> {
+  currentBook = null;
+  if (cardEl) cardEl.hidden = true;
+  if (saveButton) saveButton.disabled = true;
+  setStatus('Reading this page…');
+
+  try {
+    const tab = await getActiveTab();
+    const tabUrl = tab.url ?? '';
+
+    if (!/^https:\/\/(?:www\.)?amazon\.com\//i.test(tabUrl)) {
+      throw new Error('Open an Amazon.com book product page, then click KDP Scout.');
+    }
+
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id! },
+      func: extractAmazonBook,
+    });
+
+    const book = injection?.result as BookDraft | undefined;
+    if (!book?.asin || !book.title) {
+      throw new Error('This does not look like an Amazon book product page, or the page layout was not recognized.');
+    }
+
+    currentBook = book;
+    renderBook(book);
+    setStatus('Page captured. Review the fields before saving.');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to read this page.';
+    setStatus(message, 'error');
+  }
+}
+
+async function saveObservation(): Promise<void> {
+  if (!currentBook?.asin || !currentBook.title) return;
+
+  if (saveButton) saveButton.disabled = true;
+
+  const observation: BookObservation = {
+    ...currentBook,
+    id: crypto.randomUUID(),
+    observedAt: new Date().toISOString(),
+  };
+
+  const stored = await chrome.storage.local.get(STORAGE_KEY);
+  const observations = Array.isArray(stored[STORAGE_KEY])
+    ? (stored[STORAGE_KEY] as BookObservation[])
+    : [];
+
+  observations.push(observation);
+  await chrome.storage.local.set({ [STORAGE_KEY]: observations });
+
+  setStatus(`Saved locally. ${observations.length.toLocaleString()} observation${observations.length === 1 ? '' : 's'} stored.`, 'success');
+  if (saveButton) saveButton.disabled = false;
+}
+
+refreshButton?.addEventListener('click', () => void capturePage());
+saveButton?.addEventListener('click', () => void saveObservation());
+
+void capturePage();
