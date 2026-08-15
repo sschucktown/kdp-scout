@@ -251,3 +251,70 @@
   font-size: 8px;
   line-height: 1.35;
 }
+
+.bsr-history-summary {
+  margin: 9px 0 8px;
+  padding: 8px;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  background: white;
+}
+
+.bsr-history-heading {
+  margin: 0;
+  color: #171717;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.bsr-history-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.bsr-history-metric {
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid #ededed;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.bsr-history-metric span {
+  display: block;
+  color: #737373;
+  font-size: 8px;
+  line-height: 1.25;
+}
+
+.bsr-history-metric strong {
+  display: block;
+  margin-top: 2px;
+  color: #171717;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.bsr-history-status {
+  margin: 7px 0 0;
+  padding-top: 7px;
+  border-top: 1px solid #f0f0f0;
+  color: #525252;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.bsr-history-note {
+  margin: 6px 0 0;
+  color: #737373;
+  font-size: 8px;
+  line-height: 1.35;
+}
+
+.bsr-history-result {
+  padding-top: 3px;
+  border-top: 1px dashed #e5e5e5;
+}
