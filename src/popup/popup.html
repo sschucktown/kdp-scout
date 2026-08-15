@@ -21,6 +21,9 @@
         <button id="observations-tab" class="tab" type="button">
           Observations <span id="observation-count" class="count">0</span>
         </button>
+        <button id="saved-searches-tab" class="tab" type="button">
+          Searches <span id="saved-search-count" class="count">0</span>
+        </button>
       </nav>
 
       <section id="capture-view">
@@ -80,10 +83,22 @@
         <div id="observations-list" class="observations-list"></div>
       </section>
 
-      <p class="footnote">Observations and saved searches are stored locally in this Chrome profile. Export observations before removing the extension.</p>
+      <section id="saved-searches-view" hidden>
+        <div class="saved-searches-actions">
+          <button id="export-searches-csv" class="secondary" type="button">Export CSV</button>
+          <button id="export-searches-json" class="secondary" type="button">Export JSON</button>
+          <button id="clear-searches" class="danger" type="button">Clear</button>
+        </div>
+
+        <p id="saved-searches-empty" class="empty-state">No classified searches saved yet.</p>
+        <div id="saved-searches-list" class="saved-searches-list"></div>
+      </section>
+
+      <p class="footnote">Observations and saved searches are stored locally in this Chrome profile. Export both before removing the extension.</p>
     </main>
 
     <script type="module" src="./popup.js"></script>
     <script type="module" src="./search.js"></script>
+    <script type="module" src="./search-history.js"></script>
   </body>
 </html>
