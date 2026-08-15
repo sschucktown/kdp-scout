@@ -1,5 +1,7 @@
 export {};
 
+import type { BookObservation } from '../models/book.js';
+
 type RelevanceClassification = 'Direct' | 'Adjacent' | 'Irrelevant';
 
 interface SavedSearchResult {
@@ -22,6 +24,7 @@ interface SavedSearchCapture {
 }
 
 const SEARCH_STORAGE_KEY = 'searchCaptures';
+const BOOK_STORAGE_KEY = 'bookObservations';
 
 const captureTab = document.querySelector<HTMLButtonElement>('#capture-tab');
 const observationsTab = document.querySelector<HTMLButtonElement>('#observations-tab');
@@ -66,6 +69,27 @@ async function getSavedSearches(): Promise<SavedSearchCapture[]> {
     : [];
 }
 
+async function getBookObservations(): Promise<BookObservation[]> {
+  const stored = await chrome.storage.local.get(BOOK_STORAGE_KEY);
+  return Array.isArray(stored[BOOK_STORAGE_KEY])
+    ? (stored[BOOK_STORAGE_KEY] as BookObservation[])
+    : [];
+}
+
+function latestObservationByAsin(observations: BookObservation[]): Map<string, BookObservation> {
+  const latest = new Map<string, BookObservation>();
+
+  for (const observation of observations) {
+    if (!observation.asin) continue;
+    const existing = latest.get(observation.asin);
+    if (!existing || observation.observedAt > existing.observedAt) {
+      latest.set(observation.asin, observation);
+    }
+  }
+
+  return latest;
+}
+
 function getCounts(search: SavedSearchCapture): {
   direct: number;
   adjacent: number;
@@ -87,6 +111,28 @@ function getCounts(search: SavedSearchCapture): {
   return { direct, adjacent, irrelevant, unclassified };
 }
 
+function getDirectCoverage(
+  search: SavedSearchCapture,
+  latestObservations: Map<string, BookObservation>,
+): { total: number; observed: number; withBsr: number } {
+  const directAsins = new Set(
+    search.results
+      .filter((result) => result.relevance === 'Direct')
+      .map((result) => result.asin),
+  );
+
+  let observed = 0;
+  let withBsr = 0;
+  for (const asin of directAsins) {
+    const observation = latestObservations.get(asin);
+    if (!observation) continue;
+    observed += 1;
+    if (observation.booksBsr !== undefined) withBsr += 1;
+  }
+
+  return { total: directAsins.size, observed, withBsr };
+}
+
 function appendCount(container: HTMLElement, label: string, value: number): void {
   const item = document.createElement('span');
   item.append(document.createTextNode(label));
@@ -96,7 +142,22 @@ function appendCount(container: HTMLElement, label: string, value: number): void
   container.append(item);
 }
 
-function renderSavedSearches(searches: SavedSearchCapture[]): void {
+function observationSummary(observation: BookObservation): string {
+  const parts = [
+    observation.booksBsr === undefined ? undefined : `BSR #${observation.booksBsr.toLocaleString()}`,
+    observation.publicationDate ? `Published ${observation.publicationDate}` : undefined,
+    observation.publisher,
+    observation.pageCount === undefined ? undefined : `${observation.pageCount.toLocaleString()} pages`,
+  ].filter((value): value is string => Boolean(value));
+
+  const details = parts.length > 0 ? parts.join(' · ') : 'Product details captured';
+  return `${details} · observed ${new Date(observation.observedAt).toLocaleString()}`;
+}
+
+function renderSavedSearches(
+  searches: SavedSearchCapture[],
+  latestObservations: Map<string, BookObservation>,
+): void {
   if (savedSearchCount) savedSearchCount.textContent = searches.length.toLocaleString();
   if (savedSearchesList) savedSearchesList.replaceChildren();
   if (savedSearchesEmpty) savedSearchesEmpty.hidden = searches.length > 0;
@@ -109,6 +170,7 @@ function renderSavedSearches(searches: SavedSearchCapture[]): void {
   const sorted = [...searches].sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
   for (const search of sorted) {
     const counts = getCounts(search);
+    const coverage = getDirectCoverage(search, latestObservations);
     const article = document.createElement('article');
     article.className = 'saved-search-item';
 
@@ -126,6 +188,12 @@ function renderSavedSearches(searches: SavedSearchCapture[]): void {
     appendCount(countGrid, 'Adjacent', counts.adjacent);
     appendCount(countGrid, 'Irrelevant', counts.irrelevant);
     appendCount(countGrid, 'Unclassified', counts.unclassified);
+
+    const coverageLine = document.createElement('p');
+    coverageLine.className = 'saved-search-date';
+    coverageLine.textContent = coverage.total === 0
+      ? 'Direct product coverage: no Direct ASINs classified.'
+      : `Direct product coverage: ${coverage.observed}/${coverage.total} unique ASINs observed · ${coverage.withBsr} with Books BSR`;
 
     const details = document.createElement('details');
     details.className = 'saved-search-details';
@@ -168,19 +236,33 @@ function renderSavedSearches(searches: SavedSearchCapture[]): void {
       meta.append(document.createTextNode(metadata));
 
       content.append(resultTitle, meta);
+
+      const latestObservation = latestObservations.get(result.asin);
+      if (latestObservation) {
+        const observationMeta = document.createElement('p');
+        observationMeta.className = 'saved-search-result-meta';
+        observationMeta.textContent = observationSummary(latestObservation);
+        content.append(observationMeta);
+      } else if (result.relevance === 'Direct') {
+        const missingObservation = document.createElement('p');
+        missingObservation.className = 'saved-search-result-meta';
+        missingObservation.textContent = 'No product observation captured yet.';
+        content.append(missingObservation);
+      }
+
       row.append(position, content);
       results.append(row);
     }
 
     details.append(summary, results);
-    article.append(title, date, countGrid, details);
+    article.append(title, date, countGrid, coverageLine, details);
     savedSearchesList.append(article);
   }
 }
 
 async function refreshSavedSearchesView(): Promise<SavedSearchCapture[]> {
-  const searches = await getSavedSearches();
-  renderSavedSearches(searches);
+  const [searches, observations] = await Promise.all([getSavedSearches(), getBookObservations()]);
+  renderSavedSearches(searches, latestObservationByAsin(observations));
   return searches;
 }
 
@@ -201,8 +283,9 @@ function hideSavedSearchesView(): void {
 }
 
 async function exportSearchesCsv(): Promise<void> {
-  const searches = await getSavedSearches();
+  const [searches, observations] = await Promise.all([getSavedSearches(), getBookObservations()]);
   if (searches.length === 0) return;
+  const latestObservations = latestObservationByAsin(observations);
 
   const headers = [
     'searchId',
@@ -217,11 +300,19 @@ async function exportSearchesCsv(): Promise<void> {
     'productUrl',
     'displayPrice',
     'ratingCount',
+    'latestObservedAt',
+    'latestBooksBsr',
+    'latestPublisher',
+    'latestPublicationDate',
+    'latestPageCount',
+    'latestObservedPrice',
+    'latestObservedRatingCount',
   ];
 
   const rows: string[] = [];
   for (const search of searches) {
     for (const result of search.results) {
+      const observation = latestObservations.get(result.asin);
       rows.push([
         search.id,
         search.capturedAt,
@@ -235,6 +326,13 @@ async function exportSearchesCsv(): Promise<void> {
         result.url,
         result.displayPrice,
         result.ratingCount,
+        observation?.observedAt,
+        observation?.booksBsr,
+        observation?.publisher,
+        observation?.publicationDate,
+        observation?.pageCount,
+        observation?.displayPrice,
+        observation?.ratingCount,
       ].map(csvValue).join(','));
     }
   }
@@ -244,12 +342,21 @@ async function exportSearchesCsv(): Promise<void> {
 }
 
 async function exportSearchesJson(): Promise<void> {
-  const searches = await getSavedSearches();
+  const [searches, observations] = await Promise.all([getSavedSearches(), getBookObservations()]);
   if (searches.length === 0) return;
+  const latestObservations = latestObservationByAsin(observations);
+
+  const enrichedSearches = searches.map((search) => ({
+    ...search,
+    results: search.results.map((result) => ({
+      ...result,
+      latestObservation: latestObservations.get(result.asin) ?? null,
+    })),
+  }));
 
   downloadText(
     `kdp-scout-searches-${localDateKey(new Date())}.json`,
-    JSON.stringify(searches, null, 2),
+    JSON.stringify(enrichedSearches, null, 2),
     'application/json;charset=utf-8',
   );
 }
@@ -264,7 +371,7 @@ async function clearSavedSearches(): Promise<void> {
   if (!confirmed) return;
 
   await chrome.storage.local.remove(SEARCH_STORAGE_KEY);
-  renderSavedSearches([]);
+  renderSavedSearches([], new Map());
 }
 
 savedSearchesTab?.addEventListener('click', showSavedSearchesView);
@@ -275,7 +382,8 @@ exportSearchesJsonButton?.addEventListener('click', () => void exportSearchesJso
 clearSearchesButton?.addEventListener('click', () => void clearSavedSearches());
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== 'local' || !changes[SEARCH_STORAGE_KEY]) return;
+  if (areaName !== 'local') return;
+  if (!changes[SEARCH_STORAGE_KEY] && !changes[BOOK_STORAGE_KEY]) return;
   void refreshSavedSearchesView();
 });
 
