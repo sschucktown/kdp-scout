@@ -33,8 +33,18 @@
             <div><dt>Visible results</dt><dd id="search-result-count">—</dd></div>
           </dl>
 
+          <p class="classification-guide">
+            Direct = same search intent · Adjacent = related substitute · Irrelevant = does not materially serve the intent
+          </p>
+          <div class="relevance-summary" aria-label="Relevance classification counts">
+            <span>Direct <strong id="direct-count">0</strong></span>
+            <span>Adjacent <strong id="adjacent-count">0</strong></span>
+            <span>Irrelevant <strong id="irrelevant-count">0</strong></span>
+            <span>Unclassified <strong id="unclassified-count">0</strong></span>
+          </div>
+
           <div id="search-results-list" class="search-results-list"></div>
-          <button id="save-search" class="primary" type="button">Save search results</button>
+          <button id="save-search" class="primary" type="button">Save classified search</button>
         </section>
 
         <section id="book-card" class="card" hidden>
