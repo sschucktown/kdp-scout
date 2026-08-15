@@ -6,6 +6,9 @@ const statusEl = document.querySelector<HTMLParagraphElement>('#status');
 const cardEl = document.querySelector<HTMLElement>('#book-card');
 const saveButton = document.querySelector<HTMLButtonElement>('#save');
 const refreshButton = document.querySelector<HTMLButtonElement>('#refresh');
+const diagnosticsButton = document.querySelector<HTMLButtonElement>('#diagnostics');
+const diagnosticsPanel = document.querySelector<HTMLElement>('#diagnostics-panel');
+const diagnosticsOutput = document.querySelector<HTMLTextAreaElement>('#diagnostics-output');
 
 let currentBook: BookDraft | null = null;
 
@@ -142,7 +145,9 @@ function extractAmazonBook(): BookDraft {
       document.querySelector('#centerCol')?.textContent ??
       document.querySelector('#title_feature_div')?.parentElement?.textContent,
     );
-    const fallbackRating = titleRegion.match(/\b\d(?:\.\d)?\s*[^\d]{0,20}\(([\d,]+)\)/)?.[1];
+    const fallbackRating =
+      titleRegion.match(/\b[0-5](?:\.\d)?(?:\s*out of 5 stars)?[\s\S]{0,120}?\(([\d,]+)\)/i)?.[1] ??
+      titleRegion.match(/\(([\d,]+)\)/)?.[1];
     if (fallbackRating) ratingCount = Number.parseInt(fallbackRating.replace(/,/g, ''), 10);
   }
 
@@ -170,6 +175,7 @@ function extractAmazonBook(): BookDraft {
         '#tmmSwatches *',
         '#formats *',
         '#buybox *',
+        '#rightCol *',
         '[id*="mediaTab"] *',
       ],
       pricePattern,
@@ -182,8 +188,8 @@ function extractAmazonBook(): BookDraft {
   } else {
     const format = firstText('#productSubtitle') || firstText('#mediaTabs .a-active') || 'Paperback';
     const escapedFormat = format.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const formatPrice = bodyText.match(new RegExp(`${escapedFormat}[\\s\\S]{0,80}?\\$\\s*([\\d,]+(?:\\.\\d{2})?)`, 'i'))?.[1]
-      ?? bodyText.match(/Paperback[\s\S]{0,80}?\$\s*([\d,]+(?:\.\d{2})?)/i)?.[1];
+    const formatPrice = bodyText.match(new RegExp(`${escapedFormat}[\\s\\S]{0,300}?\\$\\s*([\\d,]+(?:\\.\\d{2})?)`, 'i'))?.[1]
+      ?? bodyText.match(/Paperback[\s\S]{0,300}?\$\s*([\d,]+(?:\.\d{2})?)/i)?.[1];
     if (formatPrice) displayPrice = `$${formatPrice}`;
   }
 
@@ -205,6 +211,84 @@ function extractAmazonBook(): BookDraft {
     publisher,
     publicationDate,
     pageCount,
+  };
+}
+
+function extractAmazonDiagnostics(): Record<string, unknown> {
+  const normalize = (value: string | null | undefined): string =>
+    (value ?? '')
+      .replace(/[\u200e\u200f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const describe = (element: Element): Record<string, string | null> => ({
+    tag: element.tagName.toLowerCase(),
+    id: element.id || null,
+    className: typeof element.className === 'string' ? element.className.slice(0, 300) : null,
+    ariaLabel: element.getAttribute('aria-label'),
+    href: element.getAttribute('href'),
+    text: normalize(element.textContent).slice(0, 300),
+    html: element.outerHTML.slice(0, 1200),
+  });
+
+  const leafMatches = (rootSelector: string, pattern: RegExp, limit = 15): Array<Record<string, string | null>> => {
+    const roots = Array.from(document.querySelectorAll(rootSelector));
+    const matches: Array<Record<string, string | null>> = [];
+    const seen = new Set<Element>();
+
+    for (const root of roots) {
+      const elements = [root, ...Array.from(root.querySelectorAll('*'))];
+      for (const element of elements) {
+        if (seen.has(element)) continue;
+        seen.add(element);
+
+        const value = normalize(element.textContent);
+        if (!value || value.length > 180 || !pattern.test(value)) continue;
+
+        const childHasSameSignal = Array.from(element.children).some((child) => {
+          const childValue = normalize(child.textContent);
+          return childValue.length <= 180 && pattern.test(childValue);
+        });
+        if (childHasSameSignal) continue;
+
+        matches.push(describe(element));
+        if (matches.length >= limit) return matches;
+      }
+    }
+
+    return matches;
+  };
+
+  const contextMatches = (pattern: RegExp, limit = 12): string[] => {
+    const body = normalize(document.body?.innerText);
+    const results: string[] = [];
+    let match: RegExpExecArray | null;
+    const regex = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
+
+    while ((match = regex.exec(body)) && results.length < limit) {
+      const start = Math.max(0, match.index - 140);
+      const end = Math.min(body.length, match.index + match[0].length + 140);
+      results.push(body.slice(start, end));
+      if (match[0].length === 0) regex.lastIndex += 1;
+    }
+
+    return results;
+  };
+
+  return {
+    url: window.location.href,
+    title: normalize(document.querySelector('#productTitle')?.textContent),
+    centerText: normalize(document.querySelector('#centerCol')?.textContent).slice(0, 2200),
+    ratingNodes: leafMatches(
+      '#centerCol, #averageCustomerReviews_feature_div, #title_feature_div',
+      /(?:\([\d,]+\)|\b[0-5](?:\.\d)?\b|ratings?|reviews?)/i,
+    ),
+    priceNodes: leafMatches(
+      '#rightCol, #buybox, #tmmSwatches, #formats, #mediaTabs, #mediaNoAccordion',
+      /\$\s*[\d,]+(?:\.\d{2})?/,
+    ),
+    ratingContexts: contextMatches(/\([\d,]+\)/g),
+    priceContexts: contextMatches(/\$\s*[\d,]+(?:\.\d{2})?/g),
   };
 }
 
@@ -241,6 +325,33 @@ async function capturePage(): Promise<void> {
   }
 }
 
+async function copyDiagnostics(): Promise<void> {
+  try {
+    const tab = await getActiveTab();
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id! },
+      func: extractAmazonDiagnostics,
+    });
+
+    const diagnostics = JSON.stringify(injection?.result ?? {}, null, 2);
+    if (diagnosticsOutput) {
+      diagnosticsOutput.value = diagnostics;
+      diagnosticsOutput.select();
+    }
+    if (diagnosticsPanel) diagnosticsPanel.hidden = false;
+
+    try {
+      await navigator.clipboard.writeText(diagnostics);
+      setStatus('Diagnostics copied. Paste them into ChatGPT.', 'success');
+    } catch {
+      setStatus('Diagnostics generated. Copy the text below and paste it into ChatGPT.', 'success');
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to collect diagnostics.';
+    setStatus(message, 'error');
+  }
+}
+
 async function saveObservation(): Promise<void> {
   if (!currentBook?.asin || !currentBook.title) return;
 
@@ -266,5 +377,6 @@ async function saveObservation(): Promise<void> {
 
 refreshButton?.addEventListener('click', () => void capturePage());
 saveButton?.addEventListener('click', () => void saveObservation());
+diagnosticsButton?.addEventListener('click', () => void copyDiagnostics());
 
 void capturePage();
