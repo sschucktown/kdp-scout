@@ -31,6 +31,12 @@
         </dl>
 
         <button id="save" class="primary" type="button">Save observation</button>
+        <button id="diagnostics" class="secondary full-width" type="button">Copy diagnostics</button>
+      </section>
+
+      <section id="diagnostics-panel" class="diagnostics" hidden>
+        <p>Diagnostics are ready. If they were not copied automatically, copy the text below and paste it into ChatGPT.</p>
+        <textarea id="diagnostics-output" readonly></textarea>
       </section>
 
       <p class="footnote">V0 reads only the Amazon tab you explicitly open and stores observations locally in Chrome.</p>
