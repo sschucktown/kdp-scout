@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "KDP Scout",
+  "description": "Capture structured book-market observations from the Amazon page you are viewing.",
+  "version": "0.0.1",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "action": {
+    "default_title": "KDP Scout",
+    "default_popup": "popup/popup.html"
+  }
+}
