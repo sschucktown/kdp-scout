@@ -38,23 +38,80 @@ function uniqueDirectResults(search: SavedSearchCapture): SavedSearchResult[] {
   return [...unique.values()].sort((left, right) => left.position - right.position);
 }
 
-function observedAsins(observations: BookObservation[]): Set<string> {
-  const asins = new Set<string>();
+function latestObservationByAsin(observations: BookObservation[]): Map<string, BookObservation> {
+  const latest = new Map<string, BookObservation>();
+
   for (const observation of observations) {
-    if (observation.asin) asins.add(observation.asin);
+    if (!observation.asin) continue;
+    const existing = latest.get(observation.asin);
+    if (!existing || observation.observedAt > existing.observedAt) {
+      latest.set(observation.asin, observation);
+    }
   }
-  return asins;
+
+  return latest;
+}
+
+function createNextCard(
+  result: SavedSearchResult,
+  label: string,
+  buttonLabel: string,
+  status: HTMLParagraphElement,
+  extraMeta?: string,
+): HTMLElement {
+  const nextCard = document.createElement('div');
+  nextCard.className = 'audit-queue-next';
+
+  const nextLabel = document.createElement('span');
+  nextLabel.className = 'audit-queue-next-label';
+  nextLabel.textContent = label;
+
+  const title = document.createElement('p');
+  title.className = 'audit-queue-title';
+  title.textContent = `#${result.position} ${result.title}`;
+
+  const meta = document.createElement('p');
+  meta.className = 'audit-queue-meta';
+  meta.textContent = [
+    result.asin,
+    result.sponsored ? 'Sponsored' : 'Organic',
+    extraMeta,
+  ].filter((value): value is string => Boolean(value)).join(' · ');
+
+  const openButton = document.createElement('button');
+  openButton.type = 'button';
+  openButton.className = 'secondary audit-queue-open';
+  openButton.dataset.asin = result.asin;
+  openButton.textContent = buttonLabel;
+  openButton.addEventListener('click', async () => {
+    openButton.disabled = true;
+    openButton.textContent = 'Opening…';
+    try {
+      await chrome.tabs.create({ url: result.url, active: true });
+    } catch {
+      openButton.disabled = false;
+      openButton.textContent = buttonLabel;
+      status.textContent = 'Could not open the Amazon product page.';
+    }
+  });
+
+  nextCard.append(nextLabel, title, meta, openButton);
+  return nextCard;
 }
 
 function renderQueue(
   article: HTMLElement,
   search: SavedSearchCapture,
-  capturedAsins: Set<string>,
+  latestObservations: Map<string, BookObservation>,
 ): void {
   article.querySelector('.audit-queue')?.remove();
 
   const direct = uniqueDirectResults(search);
-  const missing = direct.filter((result) => !capturedAsins.has(result.asin));
+  const uncaptured = direct.filter((result) => !latestObservations.has(result.asin));
+  const needsBsrRetry = direct.filter((result) => {
+    const observation = latestObservations.get(result.asin);
+    return Boolean(observation) && observation?.booksBsr === undefined;
+  });
 
   const panel = document.createElement('section');
   panel.className = 'audit-queue';
@@ -68,61 +125,76 @@ function renderQueue(
 
   const remaining = document.createElement('span');
   remaining.className = 'audit-queue-count';
-  remaining.textContent = `${missing.length.toLocaleString()} remaining`;
+  const totalRemaining = uncaptured.length + needsBsrRetry.length;
+  remaining.textContent = `${totalRemaining.toLocaleString()} incomplete`;
 
   headingRow.append(heading, remaining);
 
   const status = document.createElement('p');
   status.className = 'audit-queue-status';
-
   panel.append(headingRow, status);
 
   if (direct.length === 0) {
-    remaining.textContent = '0 remaining';
+    remaining.textContent = '0 incomplete';
     status.textContent = 'No unique Direct competitors are classified in this search.';
-  } else if (missing.length === 0) {
+  } else if (totalRemaining === 0) {
     remaining.textContent = 'Complete';
-    status.textContent = `All ${direct.length.toLocaleString()} unique Direct competitors have a saved product observation.`;
+    status.textContent = `All ${direct.length.toLocaleString()} unique Direct competitors have a saved product observation with Books BSR.`;
   } else {
-    const next = missing[0];
-    if (!next) return;
+    status.textContent = `${uncaptured.length.toLocaleString()} uncaptured · ${needsBsrRetry.length.toLocaleString()} need BSR retry · ${direct.length.toLocaleString()} unique Direct total.`;
 
-    status.textContent = `${missing.length.toLocaleString()} of ${direct.length.toLocaleString()} unique Direct competitors still need product capture.`;
+    const uncapturedSection = document.createElement('div');
+    uncapturedSection.className = 'audit-queue-section';
 
-    const nextCard = document.createElement('div');
-    nextCard.className = 'audit-queue-next';
+    const uncapturedHeading = document.createElement('p');
+    uncapturedHeading.className = 'audit-queue-subheading';
+    uncapturedHeading.textContent = `Product capture · ${uncaptured.length.toLocaleString()} remaining`;
+    uncapturedSection.append(uncapturedHeading);
 
-    const nextLabel = document.createElement('span');
-    nextLabel.className = 'audit-queue-next-label';
-    nextLabel.textContent = 'Next uncaptured';
+    const nextUncaptured = uncaptured[0];
+    if (nextUncaptured) {
+      uncapturedSection.append(createNextCard(
+        nextUncaptured,
+        'Next uncaptured',
+        'Open next uncaptured',
+        status,
+      ));
+    } else {
+      const complete = document.createElement('p');
+      complete.className = 'audit-queue-status';
+      complete.textContent = 'Every unique Direct competitor has at least one saved observation.';
+      uncapturedSection.append(complete);
+    }
 
-    const title = document.createElement('p');
-    title.className = 'audit-queue-title';
-    title.textContent = `#${next.position} ${next.title}`;
+    const retrySection = document.createElement('div');
+    retrySection.className = 'audit-queue-section';
 
-    const meta = document.createElement('p');
-    meta.className = 'audit-queue-meta';
-    meta.textContent = `${next.asin} · ${next.sponsored ? 'Sponsored' : 'Organic'}`;
+    const retryHeading = document.createElement('p');
+    retryHeading.className = 'audit-queue-subheading';
+    retryHeading.textContent = `BSR retry · ${needsBsrRetry.length.toLocaleString()} remaining`;
+    retrySection.append(retryHeading);
 
-    const openButton = document.createElement('button');
-    openButton.type = 'button';
-    openButton.className = 'secondary audit-queue-open';
-    openButton.dataset.asin = next.asin;
-    openButton.textContent = 'Open next uncaptured';
-    openButton.addEventListener('click', async () => {
-      openButton.disabled = true;
-      openButton.textContent = 'Opening…';
-      try {
-        await chrome.tabs.create({ url: next.url, active: true });
-      } catch {
-        openButton.disabled = false;
-        openButton.textContent = 'Open next uncaptured';
-        status.textContent = 'Could not open the Amazon product page.';
-      }
-    });
+    const nextRetry = needsBsrRetry[0];
+    if (nextRetry) {
+      const observation = latestObservations.get(nextRetry.asin);
+      const observedText = observation
+        ? `last observed ${new Date(observation.observedAt).toLocaleString()}`
+        : undefined;
+      retrySection.append(createNextCard(
+        nextRetry,
+        'Next missing BSR',
+        'Open next BSR retry',
+        status,
+        observedText,
+      ));
+    } else {
+      const complete = document.createElement('p');
+      complete.className = 'audit-queue-status';
+      complete.textContent = 'No captured Direct competitors are missing Books BSR.';
+      retrySection.append(complete);
+    }
 
-    nextCard.append(nextLabel, title, meta, openButton);
-    panel.append(nextCard);
+    panel.append(uncapturedSection, retrySection);
   }
 
   const marketSummary = article.querySelector('.market-summary');
@@ -134,7 +206,7 @@ function renderQueue(
 
 async function getData(): Promise<{
   searches: SavedSearchCapture[];
-  capturedAsins: Set<string>;
+  latestObservations: Map<string, BookObservation>;
 }> {
   const stored = await chrome.storage.local.get([SEARCH_STORAGE_KEY, BOOK_STORAGE_KEY]);
   const searches = Array.isArray(stored[SEARCH_STORAGE_KEY])
@@ -144,13 +216,13 @@ async function getData(): Promise<{
     ? (stored[BOOK_STORAGE_KEY] as BookObservation[])
     : [];
 
-  return { searches, capturedAsins: observedAsins(observations) };
+  return { searches, latestObservations: latestObservationByAsin(observations) };
 }
 
 async function renderAuditQueues(): Promise<void> {
   if (!savedSearchesList) return;
 
-  const { searches, capturedAsins } = await getData();
+  const { searches, latestObservations } = await getData();
   const sorted = [...searches].sort((left, right) => right.capturedAt.localeCompare(left.capturedAt));
   const articles = Array.from(savedSearchesList.children)
     .filter((element): element is HTMLElement =>
@@ -160,7 +232,7 @@ async function renderAuditQueues(): Promise<void> {
     const search = sorted[index];
     const article = articles[index];
     if (!search || !article) continue;
-    renderQueue(article, search, capturedAsins);
+    renderQueue(article, search, latestObservations);
   }
 }
 
