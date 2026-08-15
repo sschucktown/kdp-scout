@@ -1,3 +1,5 @@
+export {};
+
 type RelevanceClassification = 'Direct' | 'Adjacent' | 'Irrelevant';
 
 interface SavedSearchResult {
