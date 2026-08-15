@@ -26,6 +26,17 @@
       <section id="capture-view">
         <p id="status" class="status">Reading this page…</p>
 
+        <section id="search-card" class="card" hidden>
+          <p id="search-status" class="status">Reading visible Amazon search results…</p>
+          <dl>
+            <div><dt>Search phrase</dt><dd id="search-query">—</dd></div>
+            <div><dt>Visible results</dt><dd id="search-result-count">—</dd></div>
+          </dl>
+
+          <div id="search-results-list" class="search-results-list"></div>
+          <button id="save-search" class="primary" type="button">Save search results</button>
+        </section>
+
         <section id="book-card" class="card" hidden>
           <dl>
             <div><dt>Title</dt><dd id="title">—</dd></div>
@@ -59,9 +70,10 @@
         <div id="observations-list" class="observations-list"></div>
       </section>
 
-      <p class="footnote">Observations are stored locally in this Chrome profile. Export them before removing the extension.</p>
+      <p class="footnote">Observations and saved searches are stored locally in this Chrome profile. Export observations before removing the extension.</p>
     </main>
 
     <script type="module" src="./popup.js"></script>
+    <script type="module" src="./search.js"></script>
   </body>
 </html>
