@@ -197,6 +197,8 @@ function renderSearch(search: SearchDraft): void {
   if (searchResultCount) searchResultCount.textContent = search.results.length.toLocaleString();
   if (searchResultsList) searchResultsList.replaceChildren();
 
+  const controlsByAsin = new Map<string, HTMLElement[]>();
+
   if (searchResultsList) {
     for (const result of search.results) {
       const article = document.createElement('article');
@@ -231,6 +233,9 @@ function renderSearch(search: SearchDraft): void {
       const controls = document.createElement('div');
       controls.className = 'relevance-controls';
       controls.setAttribute('aria-label', `Classify ${result.title}`);
+      const asinControls = controlsByAsin.get(result.asin) ?? [];
+      asinControls.push(controls);
+      controlsByAsin.set(result.asin, asinControls);
 
       for (const classification of RELEVANCE_CLASSES) {
         const button = document.createElement('button');
@@ -242,12 +247,22 @@ function renderSearch(search: SearchDraft): void {
         button.classList.toggle('active', result.relevance === classification);
 
         button.addEventListener('click', () => {
-          result.relevance = classification;
-          setActiveClassification(controls, classification);
+          for (const matchingResult of search.results) {
+            if (matchingResult.asin === result.asin) matchingResult.relevance = classification;
+          }
+          for (const matchingControls of controlsByAsin.get(result.asin) ?? []) {
+            setActiveClassification(matchingControls, classification);
+          }
+
           const counts = updateClassificationState(search);
+          const duplicateCount = search.results.filter((candidate) => candidate.asin === result.asin).length;
 
           if (counts.unclassified === 0) {
             setSearchStatus('All results classified. Ready to save.', 'success');
+          } else if (duplicateCount > 1) {
+            setSearchStatus(
+              `Applied ${classification} to all ${duplicateCount} appearances of this ASIN. ${counts.unclassified.toLocaleString()} result${counts.unclassified === 1 ? '' : 's'} left to classify.`,
+            );
           } else {
             setSearchStatus(
               `${counts.unclassified.toLocaleString()} result${counts.unclassified === 1 ? '' : 's'} left to classify.`,
