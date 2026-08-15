@@ -11,35 +11,55 @@
       <header>
         <div>
           <p class="eyebrow">KDP Scout</p>
-          <h1>Book capture</h1>
+          <h1>Book research</h1>
         </div>
         <button id="refresh" class="secondary" type="button">Refresh</button>
       </header>
 
-      <p id="status" class="status">Reading this page…</p>
+      <nav class="tabs" aria-label="KDP Scout views">
+        <button id="capture-tab" class="tab active" type="button">Capture</button>
+        <button id="observations-tab" class="tab" type="button">
+          Observations <span id="observation-count" class="count">0</span>
+        </button>
+      </nav>
 
-      <section id="book-card" class="card" hidden>
-        <dl>
-          <div><dt>Title</dt><dd id="title">—</dd></div>
-          <div><dt>ASIN</dt><dd id="asin">—</dd></div>
-          <div><dt>Price</dt><dd id="price">—</dd></div>
-          <div><dt>Ratings</dt><dd id="ratings">—</dd></div>
-          <div><dt>Books BSR</dt><dd id="bsr">—</dd></div>
-          <div><dt>Publisher</dt><dd id="publisher">—</dd></div>
-          <div><dt>Publication date</dt><dd id="publication-date">—</dd></div>
-          <div><dt>Pages</dt><dd id="pages">—</dd></div>
-        </dl>
+      <section id="capture-view">
+        <p id="status" class="status">Reading this page…</p>
 
-        <button id="save" class="primary" type="button">Save observation</button>
-        <button id="diagnostics" class="secondary full-width" type="button">Copy diagnostics</button>
+        <section id="book-card" class="card" hidden>
+          <dl>
+            <div><dt>Title</dt><dd id="title">—</dd></div>
+            <div><dt>ASIN</dt><dd id="asin">—</dd></div>
+            <div><dt>Price</dt><dd id="price">—</dd></div>
+            <div><dt>Ratings</dt><dd id="ratings">—</dd></div>
+            <div><dt>Books BSR</dt><dd id="bsr">—</dd></div>
+            <div><dt>Publisher</dt><dd id="publisher">—</dd></div>
+            <div><dt>Publication date</dt><dd id="publication-date">—</dd></div>
+            <div><dt>Pages</dt><dd id="pages">—</dd></div>
+          </dl>
+
+          <button id="save" class="primary" type="button">Save observation</button>
+          <button id="diagnostics" class="secondary full-width" type="button">Copy diagnostics</button>
+        </section>
+
+        <section id="diagnostics-panel" class="diagnostics" hidden>
+          <p>Diagnostics are ready. If they were not copied automatically, copy the text below and paste it into ChatGPT.</p>
+          <textarea id="diagnostics-output" readonly></textarea>
+        </section>
       </section>
 
-      <section id="diagnostics-panel" class="diagnostics" hidden>
-        <p>Diagnostics are ready. If they were not copied automatically, copy the text below and paste it into ChatGPT.</p>
-        <textarea id="diagnostics-output" readonly></textarea>
+      <section id="observations-view" hidden>
+        <div class="observations-actions">
+          <button id="export-csv" class="secondary" type="button">Export CSV</button>
+          <button id="export-json" class="secondary" type="button">Export JSON</button>
+          <button id="clear-observations" class="danger" type="button">Clear</button>
+        </div>
+
+        <p id="observations-empty" class="empty-state">No observations saved yet.</p>
+        <div id="observations-list" class="observations-list"></div>
       </section>
 
-      <p class="footnote">V0 reads only the Amazon tab you explicitly open and stores observations locally in Chrome.</p>
+      <p class="footnote">Observations are stored locally in this Chrome profile. Export them before removing the extension.</p>
     </main>
 
     <script type="module" src="./popup.js"></script>

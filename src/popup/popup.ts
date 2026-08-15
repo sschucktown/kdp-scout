@@ -9,6 +9,16 @@ const refreshButton = document.querySelector<HTMLButtonElement>('#refresh');
 const diagnosticsButton = document.querySelector<HTMLButtonElement>('#diagnostics');
 const diagnosticsPanel = document.querySelector<HTMLElement>('#diagnostics-panel');
 const diagnosticsOutput = document.querySelector<HTMLTextAreaElement>('#diagnostics-output');
+const captureTab = document.querySelector<HTMLButtonElement>('#capture-tab');
+const observationsTab = document.querySelector<HTMLButtonElement>('#observations-tab');
+const captureView = document.querySelector<HTMLElement>('#capture-view');
+const observationsView = document.querySelector<HTMLElement>('#observations-view');
+const observationCount = document.querySelector<HTMLElement>('#observation-count');
+const observationsList = document.querySelector<HTMLElement>('#observations-list');
+const observationsEmpty = document.querySelector<HTMLParagraphElement>('#observations-empty');
+const exportCsvButton = document.querySelector<HTMLButtonElement>('#export-csv');
+const exportJsonButton = document.querySelector<HTMLButtonElement>('#export-json');
+const clearObservationsButton = document.querySelector<HTMLButtonElement>('#clear-observations');
 
 let currentBook: BookDraft | null = null;
 
@@ -36,6 +46,178 @@ function renderBook(book: BookDraft): void {
 
   if (cardEl) cardEl.hidden = false;
   if (saveButton) saveButton.disabled = !book.asin || !book.title;
+}
+
+async function getObservations(): Promise<BookObservation[]> {
+  const stored = await chrome.storage.local.get(STORAGE_KEY);
+  return Array.isArray(stored[STORAGE_KEY])
+    ? (stored[STORAGE_KEY] as BookObservation[])
+    : [];
+}
+
+function updateObservationCount(observations: BookObservation[]): void {
+  if (observationCount) observationCount.textContent = observations.length.toLocaleString();
+}
+
+function addObservationMeta(container: HTMLElement, label: string, value: string): void {
+  const item = document.createElement('span');
+  const labelEl = document.createElement('strong');
+  labelEl.textContent = `${label}: `;
+  item.append(labelEl, document.createTextNode(value));
+  container.append(item);
+}
+
+function renderObservations(observations: BookObservation[]): void {
+  updateObservationCount(observations);
+
+  if (observationsList) observationsList.replaceChildren();
+  if (observationsEmpty) observationsEmpty.hidden = observations.length > 0;
+  if (exportCsvButton) exportCsvButton.disabled = observations.length === 0;
+  if (exportJsonButton) exportJsonButton.disabled = observations.length === 0;
+  if (clearObservationsButton) clearObservationsButton.disabled = observations.length === 0;
+
+  if (!observationsList) return;
+
+  const sorted = [...observations].sort((a, b) => b.observedAt.localeCompare(a.observedAt));
+  for (const observation of sorted) {
+    const article = document.createElement('article');
+    article.className = 'observation-item';
+
+    const title = document.createElement('p');
+    title.className = 'observation-title';
+    title.textContent = observation.title ?? observation.asin ?? 'Untitled book';
+
+    const meta = document.createElement('p');
+    meta.className = 'observation-meta';
+    addObservationMeta(meta, 'ASIN', observation.asin ?? '—');
+    addObservationMeta(meta, 'BSR', observation.booksBsr ? `#${observation.booksBsr.toLocaleString()}` : '—');
+    addObservationMeta(meta, 'Price', observation.displayPrice ?? '—');
+    addObservationMeta(meta, 'Ratings', observation.ratingCount?.toLocaleString() ?? '—');
+
+    const observed = document.createElement('p');
+    observed.className = 'observation-date';
+    observed.textContent = `Observed ${new Date(observation.observedAt).toLocaleString()}`;
+
+    article.append(title, meta, observed);
+    observationsList.append(article);
+  }
+}
+
+async function refreshObservationsView(): Promise<BookObservation[]> {
+  const observations = await getObservations();
+  renderObservations(observations);
+  return observations;
+}
+
+function switchView(view: 'capture' | 'observations'): void {
+  const showCapture = view === 'capture';
+  if (captureView) captureView.hidden = !showCapture;
+  if (observationsView) observationsView.hidden = showCapture;
+  captureTab?.classList.toggle('active', showCapture);
+  observationsTab?.classList.toggle('active', !showCapture);
+  if (refreshButton) refreshButton.hidden = !showCapture;
+
+  if (!showCapture) void refreshObservationsView();
+}
+
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function sameBookValues(left: BookDraft, right: BookDraft): boolean {
+  return left.asin === right.asin
+    && left.title === right.title
+    && left.url === right.url
+    && left.displayPrice === right.displayPrice
+    && left.ratingCount === right.ratingCount
+    && left.booksBsr === right.booksBsr
+    && left.publisher === right.publisher
+    && left.publicationDate === right.publicationDate
+    && left.pageCount === right.pageCount;
+}
+
+function isSameDayDuplicate(observations: BookObservation[], book: BookDraft, now: Date): boolean {
+  const today = localDateKey(now);
+  return observations.some((observation) =>
+    observation.asin === book.asin
+    && localDateKey(new Date(observation.observedAt)) === today
+    && sameBookValues(observation, book),
+  );
+}
+
+function downloadText(filename: string, content: string, mimeType: string): void {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function csvValue(value: string | number | undefined): string {
+  const text = value === undefined ? '' : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+async function exportObservationsCsv(): Promise<void> {
+  const observations = await getObservations();
+  if (observations.length === 0) return;
+
+  const headers = [
+    'id',
+    'observedAt',
+    'asin',
+    'title',
+    'url',
+    'displayPrice',
+    'ratingCount',
+    'booksBsr',
+    'publisher',
+    'publicationDate',
+    'pageCount',
+  ];
+  const rows = observations.map((observation) => [
+    observation.id,
+    observation.observedAt,
+    observation.asin,
+    observation.title,
+    observation.url,
+    observation.displayPrice,
+    observation.ratingCount,
+    observation.booksBsr,
+    observation.publisher,
+    observation.publicationDate,
+    observation.pageCount,
+  ].map(csvValue).join(','));
+
+  const csv = `\uFEFF${headers.join(',')}\r\n${rows.join('\r\n')}\r\n`;
+  downloadText(`kdp-scout-observations-${localDateKey(new Date())}.csv`, csv, 'text/csv;charset=utf-8');
+}
+
+async function exportObservationsJson(): Promise<void> {
+  const observations = await getObservations();
+  if (observations.length === 0) return;
+
+  downloadText(
+    `kdp-scout-observations-${localDateKey(new Date())}.json`,
+    JSON.stringify(observations, null, 2),
+    'application/json;charset=utf-8',
+  );
+}
+
+async function clearObservations(): Promise<void> {
+  const observations = await getObservations();
+  if (observations.length === 0) return;
+
+  const confirmed = window.confirm(`Delete all ${observations.length.toLocaleString()} saved observations from this Chrome profile?`);
+  if (!confirmed) return;
+
+  await chrome.storage.local.remove(STORAGE_KEY);
+  renderObservations([]);
 }
 
 async function getActiveTab(): Promise<chrome.tabs.Tab> {
@@ -357,19 +539,24 @@ async function saveObservation(): Promise<void> {
 
   if (saveButton) saveButton.disabled = true;
 
+  const now = new Date();
+  const observations = await getObservations();
+
+  if (isSameDayDuplicate(observations, currentBook, now)) {
+    setStatus('Already saved today with the same values. Duplicate skipped.', 'success');
+    if (saveButton) saveButton.disabled = false;
+    return;
+  }
+
   const observation: BookObservation = {
     ...currentBook,
     id: crypto.randomUUID(),
-    observedAt: new Date().toISOString(),
+    observedAt: now.toISOString(),
   };
-
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  const observations = Array.isArray(stored[STORAGE_KEY])
-    ? (stored[STORAGE_KEY] as BookObservation[])
-    : [];
 
   observations.push(observation);
   await chrome.storage.local.set({ [STORAGE_KEY]: observations });
+  updateObservationCount(observations);
 
   setStatus(`Saved locally. ${observations.length.toLocaleString()} observation${observations.length === 1 ? '' : 's'} stored.`, 'success');
   if (saveButton) saveButton.disabled = false;
@@ -378,5 +565,11 @@ async function saveObservation(): Promise<void> {
 refreshButton?.addEventListener('click', () => void capturePage());
 saveButton?.addEventListener('click', () => void saveObservation());
 diagnosticsButton?.addEventListener('click', () => void copyDiagnostics());
+captureTab?.addEventListener('click', () => switchView('capture'));
+observationsTab?.addEventListener('click', () => switchView('observations'));
+exportCsvButton?.addEventListener('click', () => void exportObservationsCsv());
+exportJsonButton?.addEventListener('click', () => void exportObservationsJson());
+clearObservationsButton?.addEventListener('click', () => void clearObservations());
 
+void refreshObservationsView();
 void capturePage();
