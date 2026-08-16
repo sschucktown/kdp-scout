@@ -1,0 +1,135 @@
+.economics-panel {
+  margin: 9px 0 8px;
+  padding: 8px;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  background: white;
+}
+
+.economics-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.economics-heading {
+  margin: 0;
+  color: #171717;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.economics-badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid #d4d4d4;
+  border-radius: 999px;
+  background: #fafafa;
+  color: #525252;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.economics-reference,
+.economics-note,
+.economics-status,
+.economics-warning {
+  margin: 6px 0 0;
+  color: #737373;
+  font-size: 8px;
+  line-height: 1.4;
+}
+
+.economics-warning {
+  color: #854d0e;
+  font-weight: 700;
+}
+
+.economics-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.economics-kindle-fields {
+  margin-top: 6px;
+  padding-top: 7px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.economics-field {
+  display: block;
+  min-width: 0;
+}
+
+.economics-field > span,
+.economics-field > small {
+  display: block;
+  color: #737373;
+  font-size: 8px;
+  line-height: 1.25;
+}
+
+.economics-field > small {
+  margin-top: 2px;
+}
+
+.economics-input,
+.economics-select {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 3px;
+  padding: 5px 6px;
+  border: 1px solid #d4d4d4;
+  border-radius: 6px;
+  background: white;
+  color: #171717;
+  font: inherit;
+  font-size: 9px;
+}
+
+.economics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.economics-metric {
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid #ededed;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.economics-metric span,
+.economics-metric small {
+  display: block;
+  color: #737373;
+  font-size: 8px;
+  line-height: 1.25;
+}
+
+.economics-metric strong {
+  display: block;
+  margin: 2px 0;
+  color: #171717;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.economics-save {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.economics-verify {
+  display: inline-block;
+  margin-top: 7px;
+  color: #171717;
+  font-size: 8px;
+  font-weight: 700;
+}
