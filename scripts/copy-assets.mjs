@@ -7,3 +7,4 @@ await copyFile('src/popup/popup.css', 'dist/popup/popup.css');
 await copyFile('src/popup/market-metrics.css', 'dist/popup/market-metrics.css');
 await copyFile('src/popup/review-research.css', 'dist/popup/review-research.css');
 await copyFile('src/popup/economics.css', 'dist/popup/economics.css');
+await copyFile('src/popup/production-catalog.css', 'dist/popup/production-catalog.css');
