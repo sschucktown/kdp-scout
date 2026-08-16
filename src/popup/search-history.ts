@@ -3,6 +3,7 @@ export {};
 import type { BookObservation } from '../models/book.js';
 
 type RelevanceClassification = 'Direct' | 'Adjacent' | 'Irrelevant';
+type AuthorityStatus = 'True authority' | 'Ordinary incumbent' | 'Unclear';
 
 interface SavedSearchResult {
   position: number;
@@ -23,8 +24,19 @@ interface SavedSearchCapture {
   results: SavedSearchResult[];
 }
 
+interface AuthorityReview {
+  query: string;
+  asin: string;
+  status: AuthorityStatus;
+  note?: string;
+  updatedAt: string;
+}
+
+type AuthorityReviewMap = Record<string, AuthorityReview>;
+
 const SEARCH_STORAGE_KEY = 'searchCaptures';
 const BOOK_STORAGE_KEY = 'bookObservations';
+const AUTHORITY_STORAGE_KEY = 'authorityReviews';
 
 const captureTab = document.querySelector<HTMLButtonElement>('#capture-tab');
 const observationsTab = document.querySelector<HTMLButtonElement>('#observations-tab');
@@ -39,6 +51,14 @@ const exportSearchesCsvButton = document.querySelector<HTMLButtonElement>('#expo
 const exportSearchesJsonButton = document.querySelector<HTMLButtonElement>('#export-searches-json');
 const clearSearchesButton = document.querySelector<HTMLButtonElement>('#clear-searches');
 const refreshButton = document.querySelector<HTMLButtonElement>('#refresh');
+
+function normalizeQuery(query: string): string {
+  return query.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function authorityKey(query: string, asin: string): string {
+  return `${normalizeQuery(query)}::${asin.toUpperCase()}`;
+}
 
 function localDateKey(date: Date): string {
   const year = date.getFullYear();
@@ -74,6 +94,14 @@ async function getBookObservations(): Promise<BookObservation[]> {
   return Array.isArray(stored[BOOK_STORAGE_KEY])
     ? (stored[BOOK_STORAGE_KEY] as BookObservation[])
     : [];
+}
+
+async function getAuthorityReviews(): Promise<AuthorityReviewMap> {
+  const stored = await chrome.storage.local.get(AUTHORITY_STORAGE_KEY);
+  const value = stored[AUTHORITY_STORAGE_KEY];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as AuthorityReviewMap)
+    : {};
 }
 
 function latestObservationByAsin(observations: BookObservation[]): Map<string, BookObservation> {
@@ -283,7 +311,11 @@ function hideSavedSearchesView(): void {
 }
 
 async function exportSearchesCsv(): Promise<void> {
-  const [searches, observations] = await Promise.all([getSavedSearches(), getBookObservations()]);
+  const [searches, observations, authorityReviews] = await Promise.all([
+    getSavedSearches(),
+    getBookObservations(),
+    getAuthorityReviews(),
+  ]);
   if (searches.length === 0) return;
   const latestObservations = latestObservationByAsin(observations);
 
@@ -295,6 +327,9 @@ async function exportSearchesCsv(): Promise<void> {
     'position',
     'sponsored',
     'relevance',
+    'authorityStatus',
+    'authorityNote',
+    'authorityUpdatedAt',
     'asin',
     'title',
     'productUrl',
@@ -313,6 +348,7 @@ async function exportSearchesCsv(): Promise<void> {
   for (const search of searches) {
     for (const result of search.results) {
       const observation = latestObservations.get(result.asin);
+      const authorityReview = authorityReviews[authorityKey(search.query, result.asin)];
       rows.push([
         search.id,
         search.capturedAt,
@@ -321,6 +357,9 @@ async function exportSearchesCsv(): Promise<void> {
         result.position,
         result.sponsored,
         result.relevance,
+        authorityReview?.status,
+        authorityReview?.note,
+        authorityReview?.updatedAt,
         result.asin,
         result.title,
         result.url,
@@ -342,7 +381,11 @@ async function exportSearchesCsv(): Promise<void> {
 }
 
 async function exportSearchesJson(): Promise<void> {
-  const [searches, observations] = await Promise.all([getSavedSearches(), getBookObservations()]);
+  const [searches, observations, authorityReviews] = await Promise.all([
+    getSavedSearches(),
+    getBookObservations(),
+    getAuthorityReviews(),
+  ]);
   if (searches.length === 0) return;
   const latestObservations = latestObservationByAsin(observations);
 
@@ -351,6 +394,7 @@ async function exportSearchesJson(): Promise<void> {
     results: search.results.map((result) => ({
       ...result,
       latestObservation: latestObservations.get(result.asin) ?? null,
+      authorityReview: authorityReviews[authorityKey(search.query, result.asin)] ?? null,
     })),
   }));
 
@@ -366,11 +410,11 @@ async function clearSavedSearches(): Promise<void> {
   if (searches.length === 0) return;
 
   const confirmed = window.confirm(
-    `Delete all ${searches.length.toLocaleString()} saved search snapshot${searches.length === 1 ? '' : 's'} from this Chrome profile?`,
+    `Delete all ${searches.length.toLocaleString()} saved search snapshot${searches.length === 1 ? '' : 's'} and their authority reviews from this Chrome profile?`,
   );
   if (!confirmed) return;
 
-  await chrome.storage.local.remove(SEARCH_STORAGE_KEY);
+  await chrome.storage.local.remove([SEARCH_STORAGE_KEY, AUTHORITY_STORAGE_KEY]);
   renderSavedSearches([], new Map());
 }
 
