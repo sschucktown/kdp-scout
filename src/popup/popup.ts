@@ -1,9 +1,20 @@
 import type { BookDraft, BookObservation } from '../models/book.js';
+import type { CapturedReview, ReviewPageDraft } from '../models/review.js';
 
 const STORAGE_KEY = 'bookObservations';
+const REVIEW_STORAGE_KEY = 'capturedReviews';
+
+type AmazonPageType = 'product' | 'search' | 'reviews' | 'unsupported';
+type AmazonReviewPageKind = 'list' | 'permalink';
+type ReviewStarFilter = 1 | 2 | 3 | 4 | 5 | 'all';
+
+const MAX_REVIEW_PAGES_PER_FILTER = 500;
+const REVIEW_PAGE_DELAY_MIN_MS = 500;
+const REVIEW_PAGE_DELAY_MAX_MS = 1000;
 
 const statusEl = document.querySelector<HTMLParagraphElement>('#status');
 const cardEl = document.querySelector<HTMLElement>('#book-card');
+const searchCardEl = document.querySelector<HTMLElement>('#search-card');
 const saveButton = document.querySelector<HTMLButtonElement>('#save');
 const refreshButton = document.querySelector<HTMLButtonElement>('#refresh');
 const diagnosticsButton = document.querySelector<HTMLButtonElement>('#diagnostics');
@@ -19,8 +30,21 @@ const observationsEmpty = document.querySelector<HTMLParagraphElement>('#observa
 const exportCsvButton = document.querySelector<HTMLButtonElement>('#export-csv');
 const exportJsonButton = document.querySelector<HTMLButtonElement>('#export-json');
 const clearObservationsButton = document.querySelector<HTMLButtonElement>('#clear-observations');
+const reviewCard = document.querySelector<HTMLElement>('#review-card');
+const captureReviewsButton = document.querySelector<HTMLButtonElement>('#capture-reviews');
+const exportReviewsButton = document.querySelector<HTMLButtonElement>('#export-reviews');
+const exportCapturedReviewsButton = document.querySelector<HTMLButtonElement>('#export-captured-reviews');
+const reviewStatus = document.querySelector<HTMLParagraphElement>('#review-status');
+const mineReviewFilterButton = document.querySelector<HTMLButtonElement>('#mine-review-filter');
+const mineAllRatingsButton = document.querySelector<HTMLButtonElement>('#mine-all-ratings');
+const stopReviewMiningButton = document.querySelector<HTMLButtonElement>('#stop-review-mining');
+const reviewMiningActions = document.querySelector<HTMLElement>('#review-mining-actions');
+const reviewProgress = document.querySelector<HTMLElement>('#review-progress');
 
 let currentBook: BookDraft | null = null;
+let currentReviewPage: ReviewPageDraft | null = null;
+let reviewMiningCancelled = false;
+let reviewMiningActive = false;
 
 function setText(selector: string, value: string | number | undefined): void {
   const element = document.querySelector<HTMLElement>(selector);
@@ -474,18 +498,596 @@ function extractAmazonDiagnostics(): Record<string, unknown> {
   };
 }
 
+function getAmazonPageType(rawUrl: string): AmazonPageType {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'https:' || !/^(?:www\.)?amazon\.com$/i.test(url.hostname)) return 'unsupported';
+    if (/^\/product-reviews\/[A-Z0-9]{10}(?:\/|$)/i.test(url.pathname)) return 'reviews';
+    if (/^\/portal\/customer-reviews\/(?:[A-Z0-9]{10}(?:\/|$)|srp\/-\/[^/]+(?:\/|$))/i.test(url.pathname)) return 'reviews';
+    if (/^\/s(?:\/|$)/i.test(url.pathname)) return 'search';
+    if (/\/(?:dp|gp\/product)\/[A-Z0-9]{10}(?:\/|$)/i.test(url.pathname)) return 'product';
+    return 'unsupported';
+  } catch {
+    return 'unsupported';
+  }
+}
+
+function reviewAsinFromUrl(rawUrl: string): string | undefined {
+  try {
+    return new URL(rawUrl).pathname.match(/^\/(?:product-reviews|portal\/customer-reviews)\/([A-Z0-9]{10})(?:\/|$)/i)?.[1]?.toUpperCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function getAmazonReviewPageKind(rawUrl: string): AmazonReviewPageKind {
+  try {
+    return /^\/portal\/customer-reviews\/srp\/-\//i.test(new URL(rawUrl).pathname) ? 'permalink' : 'list';
+  } catch {
+    return 'list';
+  }
+}
+
+async function extractAmazonReviews(expectedAsin: string, requestedUrl = ''): Promise<ReviewPageDraft> {
+  const normalize = (value: string | null | undefined): string =>
+    (value ?? '').replace(/[\u200e\u200f]/g, '').replace(/\s+/g, ' ').trim();
+
+  const textFrom = (root: Element | Document, ...selectors: string[]): string | undefined => {
+    for (const selector of selectors) {
+      const value = normalize(root.querySelector(selector)?.textContent);
+      if (value) return value;
+    }
+    return undefined;
+  };
+
+  const contentHash = (value: string): string => {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  };
+
+  let root: Document = document;
+  let sourceUrl = window.location.href;
+  if (requestedUrl) {
+    const response = await fetch(requestedUrl, { credentials: 'include', redirect: 'follow' });
+    if (!response.ok) throw new Error(`Amazon returned HTTP ${response.status}.`);
+    sourceUrl = response.url || requestedUrl;
+    root = new DOMParser().parseFromString(await response.text(), 'text/html');
+  }
+
+  const source = new URL(sourceUrl, window.location.href);
+  const pageKind: AmazonReviewPageKind = /^\/portal\/customer-reviews\/srp\/-\//i.test(source.pathname)
+    ? 'permalink'
+    : 'list';
+  const bodyText = normalize(root.body?.innerText || root.body?.textContent).slice(0, 12000);
+  const reviewRoute = /^\/(?:product-reviews\/[A-Z0-9]{10}|portal\/customer-reviews\/(?:[A-Z0-9]{10}|srp\/-\/[^/]+))(?:\/|$)/i.test(source.pathname);
+  const blockedReason = requestedUrl && !reviewRoute
+    ? 'Amazon redirected to an unexpected page.'
+    : /captcha|enter the characters you see below|robot check/i.test(`${root.title} ${bodyText}`)
+    ? 'Amazon displayed a CAPTCHA or robot check.'
+    : /sign-in|ap\/signin|login/i.test(source.pathname)
+      || Boolean(root.querySelector('form[name="signIn"], form[action*="signin"], #ap_email'))
+      ? 'Amazon displayed a sign-in interstitial.'
+      : /sorry! something went wrong|page not found|dogs of amazon/i.test(`${root.title} ${bodyText}`)
+        ? 'Amazon returned an unexpected page.'
+        : undefined;
+
+  const asinFromSource = source.pathname.match(/^\/(?:product-reviews|portal\/customer-reviews)\/([A-Z0-9]{10})(?:\/|$)/i)?.[1];
+  let asin = normalize(expectedAsin || asinFromSource).toUpperCase();
+  if (!asin) {
+    const productLinkSelectors = [
+      'a[data-hook="product-link"]',
+      '.product-title a[href]',
+      'h1 a[href*="/dp/"]',
+      'a[href*="/product-reviews/"]',
+      'a[href*="/dp/"]',
+      'a[href*="/gp/product/"]',
+    ];
+    for (const selector of productLinkSelectors) {
+      for (const link of Array.from(root.querySelectorAll<HTMLAnchorElement>(selector))) {
+        const match = (link.getAttribute('href') ?? link.href).match(/\/(?:dp|gp\/product|product-reviews)\/([A-Z0-9]{10})(?:[/?]|$)/i);
+        if (!match?.[1]) continue;
+        asin = match[1].toUpperCase();
+        break;
+      }
+      if (asin) break;
+    }
+  }
+
+  const filterNames: Record<string, ReviewStarFilter> = {
+    five_star: 5,
+    four_star: 4,
+    three_star: 3,
+    two_star: 2,
+    one_star: 1,
+    all_stars: 'all',
+  };
+  let starFilter = filterNames[source.searchParams.get('filterByStar') ?? ''] ?? 'all';
+  if (!source.searchParams.has('filterByStar')) {
+    const selectedFilter = normalize(root.querySelector(
+      '[data-reftag*="hist_"][aria-current="true"], .a-filter-selected, [aria-checked="true"][data-reftag*="hist_"]',
+    )?.textContent);
+    const selectedStars = selectedFilter.match(/([1-5])\s*star/i)?.[1];
+    if (selectedStars) starFilter = Number.parseInt(selectedStars, 10) as 1 | 2 | 3 | 4 | 5;
+  }
+
+  const capturedAt = new Date().toISOString();
+  const reviewNodes = Array.from(root.querySelectorAll(
+    '[data-hook="review"], [data-hook="mobile-review"], [id^="customer_review-"]',
+  ));
+  const uniqueNodes = reviewNodes.filter((node, index) =>
+    !reviewNodes.some((candidate, candidateIndex) => candidateIndex < index && candidate.contains(node)),
+  );
+
+  const reviews: CapturedReview[] = [];
+  for (const node of uniqueNodes) {
+    const body = textFrom(
+      node,
+      '[data-hook="review-body"] span',
+      '[data-hook="review-body"]',
+      '.review-text-content span',
+      '.review-text-content',
+    );
+    if (!body) continue;
+
+    const rawReviewId = normalize(
+      node.getAttribute('data-review-id')
+      ?? node.id.match(/(?:customer_)?review-([A-Z0-9]+)/i)?.[1],
+    );
+    const reviewId = rawReviewId || undefined;
+    const rawTitle = textFrom(node, '[data-hook="review-title"]', '.review-title');
+    const title = rawTitle
+      ?.replace(/^\s*[0-5](?:\.\d)?\s+out of 5 stars\s*/i, '')
+      .trim() || undefined;
+    const ratingText = textFrom(
+      node,
+      '[data-hook="review-star-rating"]',
+      '[data-hook="cmps-review-star-rating"]',
+      '[aria-label*="out of 5 stars" i]',
+    );
+    const rating = ratingText?.match(/([0-5](?:\.\d)?)/)?.[1];
+    const starRating = rating === undefined ? undefined : Number.parseFloat(rating);
+    const helpfulText = textFrom(node, '[data-hook="helpful-vote-statement"]', '.cr-vote-text');
+    const helpfulMatch = helpfulText?.match(/([\d,]+)\s+(?:people|person) found/i)?.[1];
+    const helpfulVotes = /one person found/i.test(helpfulText ?? '')
+      ? 1
+      : helpfulMatch
+        ? Number.parseInt(helpfulMatch.replace(/,/g, ''), 10)
+        : undefined;
+    const normalizedBody = normalize(body).toLowerCase();
+
+    reviews.push({
+      id: reviewId ? `${asin}:amazon:${reviewId}` : `${asin}:content:${contentHash(normalizedBody)}`,
+      asin,
+      reviewId,
+      title,
+      body,
+      starRating: Number.isFinite(starRating) ? starRating : undefined,
+      reviewerName: textFrom(node, '.a-profile-name', '[data-hook="review-author"]'),
+      reviewDate: textFrom(node, '[data-hook="review-date"]', '.review-date'),
+      verifiedPurchase: node.querySelector('[data-hook="avp-badge"], .avp-badge') ? true : undefined,
+      helpfulVotes,
+      sourceUrl,
+      capturedAt,
+    });
+  }
+
+  const bookTitle = textFrom(
+    root,
+    '[data-hook="product-link"]',
+    '.product-title',
+    '#productTitle',
+    'h1 a[href*="/dp/"]',
+  );
+
+  const matchingText = textFrom(
+    root,
+    '[data-hook="cr-filter-info-review-rating-count"]',
+    '[data-hook="total-review-count"]',
+    '.reviews-content .a-row.a-spacing-base',
+  ) ?? bodyText.match(/[\d,]+\s+matching customer reviews?/i)?.[0];
+  const matchingValue = matchingText?.match(/([\d,]+)\s+(?:matching\s+)?customer reviews?/i)?.[1];
+  const reportedMatchingCount = matchingValue
+    ? Number.parseInt(matchingValue.replace(/,/g, ''), 10)
+    : undefined;
+
+  let nextPageUrl: string | undefined;
+  if (!blockedReason && pageKind === 'list') {
+    const nextLink = root.querySelector<HTMLAnchorElement>(
+      'li.a-last:not(.a-disabled) a, a[data-hook="next-page"], a[rel="next"], .a-pagination a[aria-label*="next" i]',
+    );
+    if (nextLink?.getAttribute('href')) {
+      const candidate = new URL(nextLink.getAttribute('href')!, source);
+      const validRoute = /^\/(?:product-reviews\/[A-Z0-9]{10}|portal\/customer-reviews\/[A-Z0-9]{10})(?:\/|$)/i.test(candidate.pathname);
+      if (candidate.origin === source.origin && validRoute) nextPageUrl = candidate.href;
+    }
+  }
+
+  return {
+    asin,
+    bookTitle,
+    sourceUrl,
+    reviews,
+    pageKind,
+    starFilter,
+    reportedMatchingCount: Number.isFinite(reportedMatchingCount) ? reportedMatchingCount : undefined,
+    nextPageUrl,
+    blockedReason,
+  };
+}
+
+async function getCapturedReviews(): Promise<CapturedReview[]> {
+  const stored = await chrome.storage.local.get(REVIEW_STORAGE_KEY);
+  return Array.isArray(stored[REVIEW_STORAGE_KEY])
+    ? stored[REVIEW_STORAGE_KEY] as CapturedReview[]
+    : [];
+}
+
+function reviewDedupeKey(review: CapturedReview): string {
+  const asin = review.asin.toUpperCase();
+  if (review.reviewId) return `${asin}::amazon::${review.reviewId.toUpperCase()}`;
+  return `${asin}::content::${review.body.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+}
+
+function setReviewStatus(message: string, kind: 'normal' | 'error' | 'success' = 'normal'): void {
+  if (!reviewStatus) return;
+  reviewStatus.textContent = message;
+  reviewStatus.classList.toggle('error', kind === 'error');
+  reviewStatus.classList.toggle('success', kind === 'success');
+}
+
+function starFilterLabel(filter: ReviewStarFilter): string {
+  if (filter === 'all') return 'All stars';
+  return `${'★'.repeat(filter)}${'☆'.repeat(5 - filter)}`;
+}
+
+function setMiningControls(active: boolean): void {
+  reviewMiningActive = active;
+  if (captureReviewsButton) captureReviewsButton.disabled = active || !currentReviewPage?.reviews.length;
+  if (mineReviewFilterButton) mineReviewFilterButton.disabled = active || currentReviewPage?.pageKind !== 'list';
+  if (mineAllRatingsButton) mineAllRatingsButton.disabled = active || currentReviewPage?.pageKind !== 'list';
+  if (stopReviewMiningButton) stopReviewMiningButton.hidden = !active;
+}
+
+interface SaveReviewResult {
+  added: number;
+  duplicates: number;
+  totalForAsin: number;
+}
+
+async function saveCapturedReviewBatch(asin: string, reviews: CapturedReview[]): Promise<SaveReviewResult> {
+  const stored = await getCapturedReviews();
+  const keys = new Set(stored.map(reviewDedupeKey));
+  const additions: CapturedReview[] = [];
+  const capturedAt = new Date().toISOString();
+  let duplicates = 0;
+  for (const review of reviews) {
+    const key = reviewDedupeKey(review);
+    if (keys.has(key)) {
+      duplicates += 1;
+      continue;
+    }
+    keys.add(key);
+    additions.push({ ...review, capturedAt });
+  }
+  const combined = additions.length > 0 ? [...stored, ...additions] : stored;
+  if (additions.length > 0) await chrome.storage.local.set({ [REVIEW_STORAGE_KEY]: combined });
+  return {
+    added: additions.length,
+    duplicates,
+    totalForAsin: new Set(
+      combined.filter((review) => review.asin.toUpperCase() === asin.toUpperCase()).map(reviewDedupeKey),
+    ).size,
+  };
+}
+
+async function renderReviewPage(page: ReviewPageDraft): Promise<void> {
+  const stored = await getCapturedReviews();
+  const storedKeys = new Set(stored.map(reviewDedupeKey));
+  const visibleKeys = new Set(page.reviews.map(reviewDedupeKey));
+  const existing = [...visibleKeys].filter((key) => storedKeys.has(key)).length;
+  setText('#review-asin', page.asin);
+  setText('#review-book-title', page.bookTitle);
+  setText('#review-filter', page.pageKind === 'permalink' ? 'Single customer review' : starFilterLabel(page.starFilter));
+  setText('#review-matching-count', page.reportedMatchingCount?.toLocaleString());
+  setText('#review-visible-count', page.reviews.length.toLocaleString());
+  setText(
+    '#review-saved-count',
+    new Set(stored.filter((review) => review.asin.toUpperCase() === page.asin.toUpperCase()).map(reviewDedupeKey)).size.toLocaleString(),
+  );
+  setText('#review-new-count', (visibleKeys.size - existing).toLocaleString());
+  if (captureReviewsButton) {
+    captureReviewsButton.textContent = page.pageKind === 'permalink' ? 'Capture this review' : 'Capture visible reviews';
+  }
+  if (reviewMiningActions) reviewMiningActions.hidden = page.pageKind === 'permalink';
+  setMiningControls(reviewMiningActive);
+  if (exportReviewsButton) exportReviewsButton.disabled = stored.length === 0;
+  if (exportCapturedReviewsButton) exportCapturedReviewsButton.disabled = stored.length === 0;
+}
+
+async function captureVisibleReviews(): Promise<void> {
+  const page = currentReviewPage;
+  if (!page) return;
+  if (captureReviewsButton) captureReviewsButton.disabled = true;
+
+  const result = await saveCapturedReviewBatch(page.asin, page.reviews);
+  setReviewStatus(
+    result.added === 0
+      ? `No new written reviews saved. ${result.totalForAsin.toLocaleString()} total captured for this ASIN.`
+      : `${result.added.toLocaleString()} new written review${result.added === 1 ? '' : 's'} saved. ${result.totalForAsin.toLocaleString()} total captured for this ASIN.`,
+    'success',
+  );
+  await renderReviewPage(page);
+}
+
+function filterUrl(sourceUrl: string, filter: ReviewStarFilter): string {
+  const url = new URL(sourceUrl);
+  const names: Record<Exclude<ReviewStarFilter, 'all'>, string> = {
+    5: 'five_star',
+    4: 'four_star',
+    3: 'three_star',
+    2: 'two_star',
+    1: 'one_star',
+  };
+  if (filter === 'all') url.searchParams.delete('filterByStar');
+  else url.searchParams.set('filterByStar', names[filter]);
+  url.searchParams.delete('pageNumber');
+  url.searchParams.delete('page');
+  return url.href;
+}
+
+function miningDelay(): Promise<void> {
+  const delay = REVIEW_PAGE_DELAY_MIN_MS
+    + Math.floor(Math.random() * (REVIEW_PAGE_DELAY_MAX_MS - REVIEW_PAGE_DELAY_MIN_MS + 1));
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+interface FilterMiningResult {
+  filter: ReviewStarFilter;
+  pages: number;
+  seen: number;
+  added: number;
+  duplicates: number;
+  totalForAsin: number;
+  reason: 'complete' | 'cancelled' | 'safety-limit' | 'blocked';
+  detail?: string;
+}
+
+async function mineFilter(
+  tabId: number,
+  originalTabId: number,
+  page: ReviewPageDraft,
+  filter: ReviewStarFilter,
+  renderProgress: (result: FilterMiningResult) => void,
+): Promise<FilterMiningResult> {
+  const result: FilterMiningResult = {
+    filter,
+    pages: 0,
+    seen: 0,
+    added: 0,
+    duplicates: 0,
+    totalForAsin: 0,
+    reason: 'complete',
+  };
+  let nextUrl: string | undefined = filterUrl(page.sourceUrl, filter);
+  const visited = new Set<string>();
+
+  while (nextUrl && result.pages < MAX_REVIEW_PAGES_PER_FILTER) {
+    if (reviewMiningCancelled) {
+      result.reason = 'cancelled';
+      break;
+    }
+    const activeTab = await getActiveTab();
+    if (activeTab.id !== originalTabId) {
+      result.reason = 'cancelled';
+      result.detail = 'The active tab changed.';
+      break;
+    }
+    const normalizedUrl = new URL(nextUrl);
+    normalizedUrl.hash = '';
+    if (visited.has(normalizedUrl.href)) {
+      result.reason = 'blocked';
+      result.detail = 'Amazon pagination repeated a page URL, so mining stopped to prevent a loop.';
+      break;
+    }
+    visited.add(normalizedUrl.href);
+
+    let minedPage: ReviewPageDraft;
+    try {
+      const [injection] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: extractAmazonReviews,
+        args: [page.asin, nextUrl],
+      });
+      minedPage = injection?.result as ReviewPageDraft;
+      if (!minedPage) throw new Error('Amazon returned an unreadable review page.');
+    } catch (error) {
+      result.reason = 'blocked';
+      result.detail = error instanceof Error ? error.message : 'Unable to retrieve the next Amazon review page.';
+      break;
+    }
+    if (minedPage.blockedReason) {
+      result.reason = 'blocked';
+      result.detail = minedPage.blockedReason;
+      break;
+    }
+    if (!minedPage.asin || minedPage.asin !== page.asin) {
+      result.reason = 'blocked';
+      result.detail = 'Amazon returned a review page for an unexpected product.';
+      break;
+    }
+    if (minedPage.starFilter !== filter) {
+      result.reason = 'blocked';
+      result.detail = 'Amazon returned a different star filter than the one requested.';
+      break;
+    }
+
+    const saved = await saveCapturedReviewBatch(page.asin, minedPage.reviews);
+    result.pages += 1;
+    result.seen += minedPage.reviews.length;
+    result.added += saved.added;
+    result.duplicates += saved.duplicates;
+    result.totalForAsin = saved.totalForAsin;
+    renderProgress(result);
+    nextUrl = minedPage.nextPageUrl;
+    if (nextUrl && result.pages < MAX_REVIEW_PAGES_PER_FILTER) await miningDelay();
+  }
+
+  if (result.pages >= MAX_REVIEW_PAGES_PER_FILTER && nextUrl) result.reason = 'safety-limit';
+  return result;
+}
+
+function filterProgressText(result: FilterMiningResult): string {
+  return [
+    `Mining ${starFilterLabel(result.filter)} written reviews…`,
+    `Pages processed: ${result.pages.toLocaleString()}`,
+    `Reviews seen: ${result.seen.toLocaleString()}`,
+    `New reviews saved: ${result.added.toLocaleString()}`,
+    `Duplicates skipped: ${result.duplicates.toLocaleString()}`,
+  ].join('\n');
+}
+
+async function mineReviews(allRatings: boolean): Promise<void> {
+  const page = currentReviewPage;
+  if (!page || page.pageKind !== 'list' || reviewMiningActive) return;
+  reviewMiningCancelled = false;
+  setMiningControls(true);
+  if (reviewProgress) {
+    reviewProgress.hidden = false;
+    reviewProgress.textContent = allRatings ? 'Mining all ratings…' : filterProgressText({
+      filter: page.starFilter, pages: 0, seen: 0, added: 0, duplicates: 0, totalForAsin: 0, reason: 'complete',
+    });
+  }
+  setReviewStatus('User-triggered review mining is running. Keep this popup open.', 'normal');
+
+  try {
+    const tab = await getActiveTab();
+    if (!tab.id) throw new Error('No active tab found.');
+    const filters: ReviewStarFilter[] = allRatings ? [5, 4, 3, 2, 1] : [page.starFilter];
+    const completed: FilterMiningResult[] = [];
+    for (const filter of filters) {
+      if (reviewMiningCancelled) break;
+      if (completed.length > 0) await miningDelay();
+      const result = await mineFilter(tab.id, tab.id, page, filter, (progress) => {
+        if (!reviewProgress) return;
+        if (!allRatings) reviewProgress.textContent = filterProgressText(progress);
+        else {
+          const lines = filters.map((candidate) => {
+            const done = completed.find((item) => item.filter === candidate);
+            if (done) return `${starFilterLabel(candidate)} ${done.reason === 'complete' ? 'complete' : 'stopped'} · ${done.added} saved`;
+            if (candidate === filter) return `${starFilterLabel(candidate)} mining… · ${progress.added} saved`;
+            return `${starFilterLabel(candidate)} pending`;
+          });
+          reviewProgress.textContent = `Mining all ratings\n\n${lines.join('\n')}\n\nTotal new unique reviews: ${completed.reduce((sum, item) => sum + item.added, 0) + progress.added}`;
+        }
+      });
+      completed.push(result);
+      if (result.reason !== 'complete') break;
+    }
+
+    const final = completed[completed.length - 1];
+    const totalAdded = completed.reduce((sum, item) => sum + item.added, 0);
+    const totalSeen = completed.reduce((sum, item) => sum + item.seen, 0);
+    const totalPages = completed.reduce((sum, item) => sum + item.pages, 0);
+    const totalDuplicates = completed.reduce((sum, item) => sum + item.duplicates, 0);
+    const totalForAsin = final?.totalForAsin ?? 0;
+    if (reviewProgress) {
+      const finishedNormally = completed.length === filters.length && final?.reason === 'complete';
+      reviewProgress.textContent = [
+        allRatings
+          ? finishedNormally ? 'All-ratings mining complete' : 'All-ratings mining stopped'
+          : final?.reason === 'complete' ? `${starFilterLabel(page.starFilter)} mining complete` : `${starFilterLabel(page.starFilter)} mining stopped`,
+        `Pages processed: ${totalPages}`,
+        `Written reviews found: ${totalSeen}`,
+        `New reviews saved: ${totalAdded}`,
+        `Already saved: ${totalDuplicates}`,
+        `Total saved for this ASIN: ${totalForAsin}`,
+      ].join('\n');
+    }
+    const stopMessage = final?.reason === 'safety-limit'
+      ? 'Mining stopped at safety limit; more Amazon pages may exist.'
+      : final?.reason === 'blocked'
+        ? `Mining stopped cleanly. ${final.detail ?? 'Amazon returned an unexpected page.'}`
+        : final?.reason === 'cancelled' || reviewMiningCancelled
+          ? `Mining stopped. ${final?.detail ?? 'Cancelled by user.'}`
+          : `${totalAdded.toLocaleString()} new written reviews saved.`;
+    setReviewStatus(stopMessage, final?.reason === 'complete' ? 'success' : final?.reason === 'cancelled' ? 'normal' : 'error');
+    await renderReviewPage(page);
+  } catch (error) {
+    setReviewStatus(error instanceof Error ? error.message : 'Review mining stopped unexpectedly.', 'error');
+  } finally {
+    setMiningControls(false);
+  }
+}
+
+async function exportCapturedReviews(): Promise<void> {
+  const reviews = await getCapturedReviews();
+  if (reviews.length === 0) return;
+  downloadText(
+    `kdp-scout-reviews-${localDateKey(new Date())}.json`,
+    JSON.stringify(reviews, null, 2),
+    'application/json;charset=utf-8',
+  );
+}
+
 async function capturePage(): Promise<void> {
   currentBook = null;
+  currentReviewPage = null;
   if (cardEl) cardEl.hidden = true;
+  if (searchCardEl) searchCardEl.hidden = true;
+  if (reviewCard) reviewCard.hidden = true;
+  if (diagnosticsPanel) diagnosticsPanel.hidden = true;
   if (saveButton) saveButton.disabled = true;
+  if (statusEl) statusEl.hidden = false;
   setStatus('Reading this page…');
 
   try {
     const tab = await getActiveTab();
     const tabUrl = tab.url ?? '';
+    const pageType = getAmazonPageType(tabUrl);
 
-    if (!/^https:\/\/(?:www\.)?amazon\.com\//i.test(tabUrl)) {
-      throw new Error('Open an Amazon.com book product page, then click KDP Scout.');
+    if (pageType === 'search') {
+      if (statusEl) statusEl.hidden = true;
+      return;
+    }
+
+    if (pageType === 'reviews') {
+      const asin = reviewAsinFromUrl(tabUrl);
+      const [injection] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id! },
+        func: extractAmazonReviews,
+        args: [asin ?? ''],
+      });
+      const page = injection?.result as ReviewPageDraft | undefined;
+      if (!page) throw new Error('Unable to read this Amazon customer-review page.');
+      if (!page.asin) {
+        throw new Error(
+          getAmazonReviewPageKind(tabUrl) === 'permalink'
+            ? 'Amazon customer review recognized, but the book ASIN could not be identified.'
+            : 'Amazon review list recognized, but the book ASIN could not be identified.',
+        );
+      }
+      if (page.blockedReason) throw new Error(page.blockedReason);
+      currentReviewPage = page;
+      if (statusEl) statusEl.hidden = true;
+      if (reviewCard) reviewCard.hidden = false;
+      setReviewStatus(
+        page.reviews.length > 0
+          ? page.pageKind === 'permalink'
+            ? 'Single Amazon customer review recognized.'
+            : 'Review list recognized. Capture or mining begins only when you click an action.'
+          : 'Review page recognized, but no customer review cards were found in the current page layout.',
+        page.reviews.length > 0 ? 'normal' : 'error',
+      );
+      await renderReviewPage(page);
+      return;
+    }
+
+    if (pageType !== 'product') {
+      throw new Error('Open an Amazon.com book product, search-results, or customer-review page, then click KDP Scout.');
     }
 
     const [injection] = await chrome.scripting.executeScript({
@@ -562,7 +1164,10 @@ async function saveObservation(): Promise<void> {
   if (saveButton) saveButton.disabled = false;
 }
 
-refreshButton?.addEventListener('click', () => void capturePage());
+refreshButton?.addEventListener('click', () => {
+  reviewMiningCancelled = true;
+  void capturePage();
+});
 saveButton?.addEventListener('click', () => void saveObservation());
 diagnosticsButton?.addEventListener('click', () => void copyDiagnostics());
 captureTab?.addEventListener('click', () => switchView('capture'));
@@ -570,6 +1175,28 @@ observationsTab?.addEventListener('click', () => switchView('observations'));
 exportCsvButton?.addEventListener('click', () => void exportObservationsCsv());
 exportJsonButton?.addEventListener('click', () => void exportObservationsJson());
 clearObservationsButton?.addEventListener('click', () => void clearObservations());
+captureReviewsButton?.addEventListener('click', () => void captureVisibleReviews());
+mineReviewFilterButton?.addEventListener('click', () => void mineReviews(false));
+mineAllRatingsButton?.addEventListener('click', () => void mineReviews(true));
+stopReviewMiningButton?.addEventListener('click', () => {
+  reviewMiningCancelled = true;
+  setReviewStatus('Stopping after the current page request finishes…');
+});
+exportReviewsButton?.addEventListener('click', () => void exportCapturedReviews());
+exportCapturedReviewsButton?.addEventListener('click', () => void exportCapturedReviews());
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local' || !changes[REVIEW_STORAGE_KEY]) return;
+  const reviews = Array.isArray(changes[REVIEW_STORAGE_KEY].newValue)
+    ? changes[REVIEW_STORAGE_KEY].newValue as CapturedReview[]
+    : [];
+  if (exportReviewsButton) exportReviewsButton.disabled = reviews.length === 0;
+  if (exportCapturedReviewsButton) exportCapturedReviewsButton.disabled = reviews.length === 0;
+});
 
 void refreshObservationsView();
+void getCapturedReviews().then((reviews) => {
+  if (exportReviewsButton) exportReviewsButton.disabled = reviews.length === 0;
+  if (exportCapturedReviewsButton) exportCapturedReviewsButton.disabled = reviews.length === 0;
+});
 void capturePage();

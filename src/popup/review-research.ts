@@ -1,6 +1,7 @@
 export {};
 
 import type { BookObservation } from '../models/book.js';
+import type { CapturedReview } from '../models/review.js';
 
 type RelevanceClassification = 'Direct' | 'Adjacent' | 'Irrelevant';
 type ReviewEvidenceKind =
@@ -73,6 +74,7 @@ interface ThemeSummary {
 const SEARCH_STORAGE_KEY = 'searchCaptures';
 const BOOK_STORAGE_KEY = 'bookObservations';
 const REVIEW_STORAGE_KEY = 'reviewResearch';
+const CAPTURED_REVIEW_STORAGE_KEY = 'capturedReviews';
 const savedSearchesList = document.querySelector<HTMLElement>('#saved-searches-list');
 
 const EVIDENCE_KINDS: ReviewEvidenceKind[] = [
@@ -182,12 +184,31 @@ function evidenceFor(store: ReviewResearchStore, query: string, asin?: string): 
     entry.query === normalized && (asin === undefined || entry.asin === asin.toUpperCase()));
 }
 
-function totalReviewsAnalyzed(store: ReviewResearchStore, query: string, targets: SavedSearchResult[]): number {
-  return targets.reduce((sum, result) => sum + (screenFor(store, query, result.asin)?.reviewsAnalyzed ?? 0), 0);
+function capturedReviewKey(review: CapturedReview): string {
+  return review.reviewId
+    ? `${review.asin.toUpperCase()}::amazon::${review.reviewId.toUpperCase()}`
+    : `${review.asin.toUpperCase()}::content::${review.body.trim().toLowerCase().replace(/\s+/g, ' ')}`;
 }
 
-function coveredCompetitors(store: ReviewResearchStore, query: string, targets: SavedSearchResult[]): number {
-  return targets.filter((result) => (screenFor(store, query, result.asin)?.reviewsAnalyzed ?? 0) > 0).length;
+function capturedCountForAsin(reviews: CapturedReview[], asin: string): number {
+  return new Set(
+    reviews
+      .filter((review) => review.asin.toUpperCase() === asin.toUpperCase())
+      .map(capturedReviewKey),
+  ).size;
+}
+
+function capturedProgress(reviews: CapturedReview[], targets: SavedSearchResult[]): { total: number; covered: number } {
+  const targetAsins = new Set(targets.map((target) => target.asin.toUpperCase()));
+  const keys = new Set<string>();
+  const coveredAsins = new Set<string>();
+  for (const review of reviews) {
+    const asin = review.asin.toUpperCase();
+    if (!targetAsins.has(asin)) continue;
+    keys.add(capturedReviewKey(review));
+    coveredAsins.add(asin);
+  }
+  return { total: keys.size, covered: coveredAsins.size };
 }
 
 function recurringThemes(store: ReviewResearchStore, query: string): ThemeSummary[] {
@@ -240,7 +261,7 @@ function targetLabel(result: SavedSearchResult, observation: BookObservation | u
 }
 
 function reviewsUrl(result: SavedSearchResult): string {
-  return `${result.url.split('#')[0] ?? result.url}#customerReviews`;
+  return `https://www.amazon.com/product-reviews/${encodeURIComponent(result.asin.toUpperCase())}`;
 }
 
 async function saveScreen(query: string, asin: string, reviewsAnalyzed: number): Promise<void> {
@@ -366,11 +387,11 @@ function renderPanel(
   search: SavedSearchCapture,
   latestObservations: Map<string, BookObservation>,
   store: ReviewResearchStore,
+  capturedReviews: CapturedReview[],
 ): void {
   article.querySelector('.review-research')?.remove();
   const targets = reviewTargets(search, latestObservations);
-  const totalAnalyzed = totalReviewsAnalyzed(store, search.query, targets);
-  const covered = coveredCompetitors(store, search.query, targets);
+  const progress = capturedProgress(capturedReviews, targets);
   const repeated = recurringThemes(store, search.query).length;
 
   const panel = document.createElement('section');
@@ -383,14 +404,16 @@ function renderPanel(
   const summary = document.createElement('div');
   summary.className = 'review-summary-grid';
   summary.append(
-    summaryMetric('Relevant reviews analyzed', totalAnalyzed.toLocaleString(), totalAnalyzed >= 50 ? 'Greenlight floor reached' : totalAnalyzed >= 30 ? 'Initial screen reached' : 'Initial target: 30'),
-    summaryMetric('Competitors covered', `${covered}/${targets.length}`),
+    summaryMetric('Written reviews captured', progress.total.toLocaleString()),
+    summaryMetric('Competitors covered', `${progress.covered}/${targets.length}`),
+    summaryMetric('Initial research target', '30', progress.total >= 30 ? 'Reached' : `${Math.max(0, 30 - progress.total)} remaining`),
+    summaryMetric('Production research target', '50–100', progress.total >= 50 ? 'In range' : `${Math.max(0, 50 - progress.total)} to range`),
     summaryMetric('Repeated themes', repeated.toLocaleString(), 'Evidence in 2+ books'),
   );
 
   const note = document.createElement('p');
   note.className = 'review-research-note';
-  note.textContent = 'Study positive and critical reviews. Capture paraphrased themes, not isolated complaints. The method targets at least 30 relevant reviews for an initial screen and 50–100 before greenlighting production.';
+  note.textContent = 'Captured reviews are the source corpus; they have not been labeled relevant or analyzed. After review, the method targets about 30 relevant reviews for an initial screen and 50–100 before greenlighting production.';
   panel.append(heading, summary, note);
 
   if (targets.length === 0) {
@@ -415,20 +438,8 @@ function renderPanel(
     openReviews.rel = 'noreferrer';
     openReviews.textContent = 'Open customer reviews';
 
-    const countRow = document.createElement('div');
-    countRow.className = 'review-field-row';
-    const countLabel = document.createElement('label');
-    countLabel.textContent = 'Relevant reviews analyzed for this book';
-    const countInput = document.createElement('input');
-    countInput.type = 'number';
-    countInput.min = '0';
-    countInput.step = '1';
-    countInput.className = 'review-count-input';
-    const saveCount = document.createElement('button');
-    saveCount.type = 'button';
-    saveCount.className = 'secondary';
-    saveCount.textContent = 'Save count';
-    countRow.append(countLabel, countInput, saveCount);
+    const capturedLine = document.createElement('p');
+    capturedLine.className = 'review-captured-line';
 
     const kindSelect = document.createElement('select');
     kindSelect.className = 'review-kind-select';
@@ -479,18 +490,11 @@ function renderPanel(
       if (!target) return;
       openReviews.href = reviewsUrl(target);
       const freshStore = await getStore();
-      countInput.value = String(screenFor(freshStore, search.query, asin)?.reviewsAnalyzed ?? 0);
+      capturedLine.textContent = `Written reviews captured for this ASIN: ${capturedCountForAsin(capturedReviews, asin).toLocaleString()}`;
       renderTargetEvidence(evidenceList, search.query, asin, freshStore);
     };
 
     targetSelect.addEventListener('change', () => void syncTarget());
-
-    saveCount.addEventListener('click', async () => {
-      const parsed = Number.parseInt(countInput.value, 10);
-      const count = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-      await saveScreen(search.query, targetSelect.value, count);
-      status.textContent = `Saved review count: ${count.toLocaleString()}.`;
-    });
 
     addButton.addEventListener('click', async () => {
       const mentionsParsed = Number.parseInt(mentionsInput.value, 10);
@@ -514,7 +518,7 @@ function renderPanel(
       status.textContent = 'Review evidence saved.';
     });
 
-    form.append(targetSelect, openReviews, countRow, kindSelect, themeInput, datalist, mentionsInput, detailInput, addButton, status, evidenceList);
+    form.append(targetSelect, openReviews, capturedLine, kindSelect, themeInput, datalist, mentionsInput, detailInput, addButton, status, evidenceList);
     panel.append(form);
     void syncTarget();
   }
@@ -532,20 +536,24 @@ async function getData(): Promise<{
   searches: SavedSearchCapture[];
   latestObservations: Map<string, BookObservation>;
   store: ReviewResearchStore;
+  capturedReviews: CapturedReview[];
 }> {
-  const stored = await chrome.storage.local.get([SEARCH_STORAGE_KEY, BOOK_STORAGE_KEY, REVIEW_STORAGE_KEY]);
+  const stored = await chrome.storage.local.get([SEARCH_STORAGE_KEY, BOOK_STORAGE_KEY, REVIEW_STORAGE_KEY, CAPTURED_REVIEW_STORAGE_KEY]);
   const searches = Array.isArray(stored[SEARCH_STORAGE_KEY]) ? stored[SEARCH_STORAGE_KEY] as SavedSearchCapture[] : [];
   const observations = Array.isArray(stored[BOOK_STORAGE_KEY]) ? stored[BOOK_STORAGE_KEY] as BookObservation[] : [];
   return {
     searches,
     latestObservations: latestObservationByAsin(observations),
     store: parseStore(stored[REVIEW_STORAGE_KEY]),
+    capturedReviews: Array.isArray(stored[CAPTURED_REVIEW_STORAGE_KEY])
+      ? stored[CAPTURED_REVIEW_STORAGE_KEY] as CapturedReview[]
+      : [],
   };
 }
 
 async function renderReviewResearch(): Promise<void> {
   if (!savedSearchesList) return;
-  const { searches, latestObservations, store } = await getData();
+  const { searches, latestObservations, store, capturedReviews } = await getData();
   const sorted = [...searches].sort((left, right) => right.capturedAt.localeCompare(left.capturedAt));
   const articles = Array.from(savedSearchesList.children)
     .filter((element): element is HTMLElement => element instanceof HTMLElement && element.classList.contains('saved-search-item'));
@@ -554,7 +562,7 @@ async function renderReviewResearch(): Promise<void> {
     const search = sorted[index];
     const article = articles[index];
     if (!search || !article) continue;
-    renderPanel(article, search, latestObservations, store);
+    renderPanel(article, search, latestObservations, store, capturedReviews);
   }
 }
 
@@ -565,7 +573,7 @@ if (savedSearchesList) {
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
-  if (!changes[SEARCH_STORAGE_KEY] && !changes[BOOK_STORAGE_KEY] && !changes[REVIEW_STORAGE_KEY]) return;
+  if (!changes[SEARCH_STORAGE_KEY] && !changes[BOOK_STORAGE_KEY] && !changes[REVIEW_STORAGE_KEY] && !changes[CAPTURED_REVIEW_STORAGE_KEY]) return;
   void renderReviewResearch();
 });
 
