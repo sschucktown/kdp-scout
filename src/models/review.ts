@@ -18,4 +18,9 @@ export interface ReviewPageDraft {
   bookTitle?: string;
   sourceUrl: string;
   reviews: CapturedReview[];
+  pageKind: 'list' | 'permalink';
+  starFilter: 1 | 2 | 3 | 4 | 5 | 'all';
+  reportedMatchingCount?: number;
+  nextPageUrl?: string;
+  blockedReason?: string;
 }

@@ -77,11 +77,19 @@
           <dl>
             <div><dt>ASIN</dt><dd id="review-asin">—</dd></div>
             <div><dt>Book</dt><dd id="review-book-title">—</dd></div>
-            <div><dt>Visible reviews found</dt><dd id="review-visible-count">0</dd></div>
-            <div><dt>Already saved</dt><dd id="review-existing-count">0</dd></div>
-            <div><dt>New reviews</dt><dd id="review-new-count">0</dd></div>
+            <div><dt>Filter</dt><dd id="review-filter">—</dd></div>
+            <div><dt>Amazon matching</dt><dd id="review-matching-count">—</dd></div>
+            <div><dt>Visible reviews</dt><dd id="review-visible-count">0</dd></div>
+            <div><dt>Saved for ASIN</dt><dd id="review-saved-count">0</dd></div>
+            <div><dt>New on this page</dt><dd id="review-new-count">0</dd></div>
           </dl>
           <button id="capture-reviews" class="primary" type="button">Capture visible reviews</button>
+          <div id="review-mining-actions" class="review-mining-actions">
+            <button id="mine-review-filter" class="secondary" type="button">Mine this filter</button>
+            <button id="mine-all-ratings" class="secondary" type="button">Mine all ratings</button>
+          </div>
+          <button id="stop-review-mining" class="danger full-width" type="button" hidden>Stop</button>
+          <div id="review-progress" class="review-progress" hidden></div>
           <button id="export-reviews" class="secondary full-width" type="button">Export all reviews JSON</button>
           <p id="review-status" class="status review-capture-status"></p>
         </section>

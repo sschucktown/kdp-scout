@@ -404,8 +404,10 @@ function renderPanel(
   const summary = document.createElement('div');
   summary.className = 'review-summary-grid';
   summary.append(
-    summaryMetric('Reviews captured', progress.total.toLocaleString(), progress.total >= 50 ? 'Production range: 50–100' : progress.total >= 30 ? 'Initial capture target reached' : 'Initial target: 30'),
+    summaryMetric('Written reviews captured', progress.total.toLocaleString()),
     summaryMetric('Competitors covered', `${progress.covered}/${targets.length}`),
+    summaryMetric('Initial research target', '30', progress.total >= 30 ? 'Reached' : `${Math.max(0, 30 - progress.total)} remaining`),
+    summaryMetric('Production research target', '50–100', progress.total >= 50 ? 'In range' : `${Math.max(0, 50 - progress.total)} to range`),
     summaryMetric('Repeated themes', repeated.toLocaleString(), 'Evidence in 2+ books'),
   );
 
@@ -488,7 +490,7 @@ function renderPanel(
       if (!target) return;
       openReviews.href = reviewsUrl(target);
       const freshStore = await getStore();
-      capturedLine.textContent = `Captured reviews for this ASIN: ${capturedCountForAsin(capturedReviews, asin).toLocaleString()}`;
+      capturedLine.textContent = `Written reviews captured for this ASIN: ${capturedCountForAsin(capturedReviews, asin).toLocaleString()}`;
       renderTargetEvidence(evidenceList, search.query, asin, freshStore);
     };
 

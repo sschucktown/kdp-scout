@@ -97,6 +97,27 @@ h1 {
   margin: 10px 0 0;
 }
 
+.review-mining-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.review-mining-actions button { width: 100%; }
+
+.review-progress {
+  margin-top: 10px;
+  padding: 9px;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  background: #fafafa;
+  white-space: pre-line;
+  color: #525252;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 dl { margin: 0; }
 
 dl > div {
