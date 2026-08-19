@@ -1,9 +1,14 @@
 import type { BookDraft, BookObservation } from '../models/book.js';
+import type { CapturedReview, ReviewPageDraft } from '../models/review.js';
 
 const STORAGE_KEY = 'bookObservations';
+const REVIEW_STORAGE_KEY = 'capturedReviews';
+
+type AmazonPageType = 'product' | 'search' | 'reviews' | 'unsupported';
 
 const statusEl = document.querySelector<HTMLParagraphElement>('#status');
 const cardEl = document.querySelector<HTMLElement>('#book-card');
+const searchCardEl = document.querySelector<HTMLElement>('#search-card');
 const saveButton = document.querySelector<HTMLButtonElement>('#save');
 const refreshButton = document.querySelector<HTMLButtonElement>('#refresh');
 const diagnosticsButton = document.querySelector<HTMLButtonElement>('#diagnostics');
@@ -19,8 +24,14 @@ const observationsEmpty = document.querySelector<HTMLParagraphElement>('#observa
 const exportCsvButton = document.querySelector<HTMLButtonElement>('#export-csv');
 const exportJsonButton = document.querySelector<HTMLButtonElement>('#export-json');
 const clearObservationsButton = document.querySelector<HTMLButtonElement>('#clear-observations');
+const reviewCard = document.querySelector<HTMLElement>('#review-card');
+const captureReviewsButton = document.querySelector<HTMLButtonElement>('#capture-reviews');
+const exportReviewsButton = document.querySelector<HTMLButtonElement>('#export-reviews');
+const exportCapturedReviewsButton = document.querySelector<HTMLButtonElement>('#export-captured-reviews');
+const reviewStatus = document.querySelector<HTMLParagraphElement>('#review-status');
 
 let currentBook: BookDraft | null = null;
+let currentReviewPage: ReviewPageDraft | null = null;
 
 function setText(selector: string, value: string | number | undefined): void {
   const element = document.querySelector<HTMLElement>(selector);
@@ -474,18 +485,246 @@ function extractAmazonDiagnostics(): Record<string, unknown> {
   };
 }
 
+function getAmazonPageType(rawUrl: string): AmazonPageType {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'https:' || !/^(?:www\.)?amazon\.com$/i.test(url.hostname)) return 'unsupported';
+    if (/^\/product-reviews\/[A-Z0-9]{10}(?:\/|$)/i.test(url.pathname)) return 'reviews';
+    if (/^\/s(?:\/|$)/i.test(url.pathname)) return 'search';
+    if (/\/(?:dp|gp\/product)\/[A-Z0-9]{10}(?:\/|$)/i.test(url.pathname)) return 'product';
+    return 'unsupported';
+  } catch {
+    return 'unsupported';
+  }
+}
+
+function reviewAsinFromUrl(rawUrl: string): string | undefined {
+  try {
+    return new URL(rawUrl).pathname.match(/^\/product-reviews\/([A-Z0-9]{10})(?:\/|$)/i)?.[1]?.toUpperCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function extractAmazonReviews(expectedAsin: string): ReviewPageDraft {
+  const normalize = (value: string | null | undefined): string =>
+    (value ?? '').replace(/[\u200e\u200f]/g, '').replace(/\s+/g, ' ').trim();
+
+  const textFrom = (root: Element | Document, ...selectors: string[]): string | undefined => {
+    for (const selector of selectors) {
+      const value = normalize(root.querySelector(selector)?.textContent);
+      if (value) return value;
+    }
+    return undefined;
+  };
+
+  const contentHash = (value: string): string => {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  };
+
+  const asin = expectedAsin.toUpperCase();
+  const sourceUrl = window.location.href;
+  const capturedAt = new Date().toISOString();
+  const reviewNodes = Array.from(document.querySelectorAll(
+    '[data-hook="review"], [data-hook="mobile-review"], [id^="customer_review-"]',
+  ));
+  const uniqueNodes = reviewNodes.filter((node, index) =>
+    !reviewNodes.some((candidate, candidateIndex) => candidateIndex < index && candidate.contains(node)),
+  );
+
+  const reviews: CapturedReview[] = [];
+  for (const node of uniqueNodes) {
+    const body = textFrom(
+      node,
+      '[data-hook="review-body"] span',
+      '[data-hook="review-body"]',
+      '.review-text-content span',
+      '.review-text-content',
+    );
+    if (!body) continue;
+
+    const rawReviewId = normalize(
+      node.getAttribute('data-review-id')
+      ?? node.id.match(/(?:customer_)?review-([A-Z0-9]+)/i)?.[1],
+    );
+    const reviewId = rawReviewId || undefined;
+    const rawTitle = textFrom(node, '[data-hook="review-title"]', '.review-title');
+    const title = rawTitle
+      ?.replace(/^\s*[0-5](?:\.\d)?\s+out of 5 stars\s*/i, '')
+      .trim() || undefined;
+    const ratingText = textFrom(
+      node,
+      '[data-hook="review-star-rating"]',
+      '[data-hook="cmps-review-star-rating"]',
+      '[aria-label*="out of 5 stars" i]',
+    );
+    const rating = ratingText?.match(/([0-5](?:\.\d)?)/)?.[1];
+    const starRating = rating === undefined ? undefined : Number.parseFloat(rating);
+    const helpfulText = textFrom(node, '[data-hook="helpful-vote-statement"]', '.cr-vote-text');
+    const helpfulMatch = helpfulText?.match(/([\d,]+)\s+(?:people|person) found/i)?.[1];
+    const helpfulVotes = /one person found/i.test(helpfulText ?? '')
+      ? 1
+      : helpfulMatch
+        ? Number.parseInt(helpfulMatch.replace(/,/g, ''), 10)
+        : undefined;
+    const normalizedBody = normalize(body).toLowerCase();
+
+    reviews.push({
+      id: reviewId ? `${asin}:amazon:${reviewId}` : `${asin}:content:${contentHash(normalizedBody)}`,
+      asin,
+      reviewId,
+      title,
+      body,
+      starRating: Number.isFinite(starRating) ? starRating : undefined,
+      reviewerName: textFrom(node, '.a-profile-name', '[data-hook="review-author"]'),
+      reviewDate: textFrom(node, '[data-hook="review-date"]', '.review-date'),
+      verifiedPurchase: node.querySelector('[data-hook="avp-badge"], .avp-badge') ? true : undefined,
+      helpfulVotes,
+      sourceUrl,
+      capturedAt,
+    });
+  }
+
+  const bookTitle = textFrom(
+    document,
+    '[data-hook="product-link"]',
+    '.product-title',
+    '#productTitle',
+    'h1 a[href*="/dp/"]',
+  );
+
+  return { asin, bookTitle, sourceUrl, reviews };
+}
+
+async function getCapturedReviews(): Promise<CapturedReview[]> {
+  const stored = await chrome.storage.local.get(REVIEW_STORAGE_KEY);
+  return Array.isArray(stored[REVIEW_STORAGE_KEY])
+    ? stored[REVIEW_STORAGE_KEY] as CapturedReview[]
+    : [];
+}
+
+function reviewDedupeKey(review: CapturedReview): string {
+  const asin = review.asin.toUpperCase();
+  if (review.reviewId) return `${asin}::amazon::${review.reviewId.toUpperCase()}`;
+  return `${asin}::content::${review.body.trim().toLowerCase().replace(/\s+/g, ' ')}`;
+}
+
+function setReviewStatus(message: string, kind: 'normal' | 'error' | 'success' = 'normal'): void {
+  if (!reviewStatus) return;
+  reviewStatus.textContent = message;
+  reviewStatus.classList.toggle('error', kind === 'error');
+  reviewStatus.classList.toggle('success', kind === 'success');
+}
+
+async function renderReviewPage(page: ReviewPageDraft): Promise<void> {
+  const stored = await getCapturedReviews();
+  const storedKeys = new Set(stored.map(reviewDedupeKey));
+  const visibleKeys = new Set(page.reviews.map(reviewDedupeKey));
+  const existing = [...visibleKeys].filter((key) => storedKeys.has(key)).length;
+  setText('#review-asin', page.asin);
+  setText('#review-book-title', page.bookTitle);
+  setText('#review-visible-count', page.reviews.length.toLocaleString());
+  setText('#review-existing-count', existing.toLocaleString());
+  setText('#review-new-count', (visibleKeys.size - existing).toLocaleString());
+  if (captureReviewsButton) captureReviewsButton.disabled = page.reviews.length === 0;
+  if (exportReviewsButton) exportReviewsButton.disabled = stored.length === 0;
+  if (exportCapturedReviewsButton) exportCapturedReviewsButton.disabled = stored.length === 0;
+}
+
+async function captureVisibleReviews(): Promise<void> {
+  const page = currentReviewPage;
+  if (!page) return;
+  if (captureReviewsButton) captureReviewsButton.disabled = true;
+
+  const stored = await getCapturedReviews();
+  const keys = new Set(stored.map(reviewDedupeKey));
+  const additions: CapturedReview[] = [];
+  const capturedAt = new Date().toISOString();
+  for (const review of page.reviews) {
+    const key = reviewDedupeKey(review);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    additions.push({ ...review, capturedAt });
+  }
+
+  if (additions.length > 0) {
+    await chrome.storage.local.set({ [REVIEW_STORAGE_KEY]: [...stored, ...additions] });
+  }
+  const totalForAsin = new Set(
+    [...stored, ...additions]
+      .filter((review) => review.asin.toUpperCase() === page.asin.toUpperCase())
+      .map(reviewDedupeKey),
+  ).size;
+  setReviewStatus(
+    additions.length === 0
+      ? `No new reviews saved. ${totalForAsin.toLocaleString()} total reviews captured for this ASIN.`
+      : `${additions.length.toLocaleString()} new review${additions.length === 1 ? '' : 's'} saved. ${totalForAsin.toLocaleString()} total reviews captured for this ASIN.`,
+    'success',
+  );
+  await renderReviewPage(page);
+}
+
+async function exportCapturedReviews(): Promise<void> {
+  const reviews = await getCapturedReviews();
+  if (reviews.length === 0) return;
+  downloadText(
+    `kdp-scout-reviews-${localDateKey(new Date())}.json`,
+    JSON.stringify(reviews, null, 2),
+    'application/json;charset=utf-8',
+  );
+}
+
 async function capturePage(): Promise<void> {
   currentBook = null;
+  currentReviewPage = null;
   if (cardEl) cardEl.hidden = true;
+  if (searchCardEl) searchCardEl.hidden = true;
+  if (reviewCard) reviewCard.hidden = true;
+  if (diagnosticsPanel) diagnosticsPanel.hidden = true;
   if (saveButton) saveButton.disabled = true;
+  if (statusEl) statusEl.hidden = false;
   setStatus('Reading this page…');
 
   try {
     const tab = await getActiveTab();
     const tabUrl = tab.url ?? '';
+    const pageType = getAmazonPageType(tabUrl);
 
-    if (!/^https:\/\/(?:www\.)?amazon\.com\//i.test(tabUrl)) {
-      throw new Error('Open an Amazon.com book product page, then click KDP Scout.');
+    if (pageType === 'search') {
+      if (statusEl) statusEl.hidden = true;
+      return;
+    }
+
+    if (pageType === 'reviews') {
+      const asin = reviewAsinFromUrl(tabUrl);
+      if (!asin) throw new Error('Could not determine the ASIN from this Amazon review page.');
+      const [injection] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id! },
+        func: extractAmazonReviews,
+        args: [asin],
+      });
+      const page = injection?.result as ReviewPageDraft | undefined;
+      if (!page) throw new Error('Unable to read this Amazon customer-review page.');
+      currentReviewPage = page;
+      if (statusEl) statusEl.hidden = true;
+      if (reviewCard) reviewCard.hidden = false;
+      setReviewStatus(
+        page.reviews.length > 0
+          ? 'Review page recognized. Capture is user-triggered and saves only the reviews currently loaded on this page.'
+          : 'Review page recognized, but no customer review cards were found in the current page layout.',
+        page.reviews.length > 0 ? 'normal' : 'error',
+      );
+      await renderReviewPage(page);
+      return;
+    }
+
+    if (pageType !== 'product') {
+      throw new Error('Open an Amazon.com book product, search-results, or customer-review page, then click KDP Scout.');
     }
 
     const [injection] = await chrome.scripting.executeScript({
@@ -570,6 +809,22 @@ observationsTab?.addEventListener('click', () => switchView('observations'));
 exportCsvButton?.addEventListener('click', () => void exportObservationsCsv());
 exportJsonButton?.addEventListener('click', () => void exportObservationsJson());
 clearObservationsButton?.addEventListener('click', () => void clearObservations());
+captureReviewsButton?.addEventListener('click', () => void captureVisibleReviews());
+exportReviewsButton?.addEventListener('click', () => void exportCapturedReviews());
+exportCapturedReviewsButton?.addEventListener('click', () => void exportCapturedReviews());
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local' || !changes[REVIEW_STORAGE_KEY]) return;
+  const reviews = Array.isArray(changes[REVIEW_STORAGE_KEY].newValue)
+    ? changes[REVIEW_STORAGE_KEY].newValue as CapturedReview[]
+    : [];
+  if (exportReviewsButton) exportReviewsButton.disabled = reviews.length === 0;
+  if (exportCapturedReviewsButton) exportCapturedReviewsButton.disabled = reviews.length === 0;
+});
 
 void refreshObservationsView();
+void getCapturedReviews().then((reviews) => {
+  if (exportReviewsButton) exportReviewsButton.disabled = reviews.length === 0;
+  if (exportCapturedReviewsButton) exportCapturedReviewsButton.disabled = reviews.length === 0;
+});
 void capturePage();

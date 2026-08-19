@@ -88,6 +88,15 @@ h1 {
   background: white;
 }
 
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.review-capture-status {
+  margin: 10px 0 0;
+}
+
 dl { margin: 0; }
 
 dl > div {

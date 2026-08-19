@@ -34,6 +34,7 @@
         <p id="status" class="status">Reading this page…</p>
 
         <section id="search-card" class="card" hidden>
+          <h2>Search capture</h2>
           <p id="search-status" class="status">Reading visible Amazon search results…</p>
           <dl>
             <div><dt>Search phrase</dt><dd id="search-query">—</dd></div>
@@ -55,6 +56,7 @@
         </section>
 
         <section id="book-card" class="card" hidden>
+          <h2>Book capture</h2>
           <dl>
             <div><dt>Title</dt><dd id="title">—</dd></div>
             <div><dt>ASIN</dt><dd id="asin">—</dd></div>
@@ -68,6 +70,20 @@
 
           <button id="save" class="primary" type="button">Save observation</button>
           <button id="diagnostics" class="secondary full-width" type="button">Copy diagnostics</button>
+        </section>
+
+        <section id="review-card" class="card" hidden>
+          <h2>Review Mining</h2>
+          <dl>
+            <div><dt>ASIN</dt><dd id="review-asin">—</dd></div>
+            <div><dt>Book</dt><dd id="review-book-title">—</dd></div>
+            <div><dt>Visible reviews found</dt><dd id="review-visible-count">0</dd></div>
+            <div><dt>Already saved</dt><dd id="review-existing-count">0</dd></div>
+            <div><dt>New reviews</dt><dd id="review-new-count">0</dd></div>
+          </dl>
+          <button id="capture-reviews" class="primary" type="button">Capture visible reviews</button>
+          <button id="export-reviews" class="secondary full-width" type="button">Export all reviews JSON</button>
+          <p id="review-status" class="status review-capture-status"></p>
         </section>
 
         <section id="diagnostics-panel" class="diagnostics" hidden>
@@ -91,6 +107,7 @@
         <div class="saved-searches-actions">
           <button id="export-searches-csv" class="secondary" type="button">Export CSV</button>
           <button id="export-searches-json" class="secondary" type="button">Export JSON</button>
+          <button id="export-captured-reviews" class="secondary" type="button">Reviews JSON</button>
           <button id="clear-searches" class="danger" type="button">Clear</button>
         </div>
 
